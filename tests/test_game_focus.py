@@ -14,13 +14,16 @@ def test_process_name_matches_the_game_executable() -> None:
     assert not is_helldivers_process("")
 
 
-def test_non_windows_foreground_is_not_the_game() -> None:
+def test_non_windows_foreground_is_not_the_game(monkeypatch) -> None:
+    from types import SimpleNamespace
+    monkeypatch.setattr('stratagems.game_focus.sys', SimpleNamespace(platform='linux'))
     assert helldivers_focused() is False
 
 
 def test_radial_bind_stays_closed_until_the_game_is_focused(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     app = App(demo=True)
+    app.config.ocr_fallback = True
     cursor = {"x": 400, "y": 300}
     fired: list[str] = []
     try:

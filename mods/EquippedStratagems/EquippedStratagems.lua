@@ -1,77 +1,13 @@
 -- HD2-Addon: mods/EquippedStratagems/EquippedStratagems
-
--- Writes equipped stratagems, one catalog name per line, for the stratagem wheel.
--- Bingus Shared Loader discovers this entry, opens the log, and chains update.
--- Send Strategems is a Mod Bindings Menu binding. This file does not patch
--- code, signature-scan, or hide itself.
---
--- The first update always creates EquippedStratagems.log. Until catalog
--- names are known the file is status lines (a leading #, which the wheel
--- ignores). Names replace that status, one catalog name per line.
--- mods/codex/loadouts is a compiled patch, so it is only reported, never
--- called.
---
--- The in-game stratagem menu (default hold Left Ctrl) is an input action,
--- not a scancode. ModBindingsMenu's input owner is *(game+0x347cf18).
--- Shipped defaults are the 256 records at owner+686968. A keyboard button
--- mapping has device nibble 3 and button-input nibble 4; the Stingray key
--- id is byte 4. Left Ctrl's id comes from stingray.Keyboard.button_id
--- ("left ctrl", "lctrl", "left control"). Hold mappings (trigger u32 2 at
--- mapping+8) win. The menu is open while that action's state byte at
--- owner+808+32*(97*group+action) is nonzero, so a rebound or a controller
--- still counts. If that action cannot be resolved, GetAsyncKeyState of
--- VK_LCONTROL (0xA2), VK_RCONTROL (0xA3), or VK_CONTROL (0x11) is the
--- fallback, the same call GalacticMenuHotkey uses.
---
--- Names are the equipped slots the menu shows, read only in mission mode
--- 1..7 (*(game+0x33266a0), ShallowWaterDiving / spawn_data). They live on
--- the player block *(game+0x3326468) that those mods already read, in the
--- span after the countdown at +0x12C and before state at +0x2E0 (and the
--- tail after the use bit at +0x3B4). Each slot list there is a stingray
--- array: u32 count, u32 capacity, then a pointer to packed StratagemInfo
--- kind ids or to StratagemInfo records from game+0x37cb600. The old inline
--- kinds at player+0x1D0 are empty on this build and are not the list. The
--- thrown ball list is not this loadout either. StratagemInfo names are
--- *(game+0x348e8f8), table game+0x37cb600 (navigation_patch).
--- game.dll is tonumber(GetModuleHandleA('game.dll')); each read is
--- ReadProcessMemory of a const void*.
-
+-- Exports the local player's selected and mission-granted stratagems, one name per line.
 local prior = rawget(_G, 'EquippedStratagems')
 if type(prior) == 'table' and prior.mod == 'EquippedStratagems' then return end
-
 local LOG_NAME = 'EquippedStratagems.log'
-local RESOURCE = 'mods/EquippedStratagems/EquippedStratagems'
-local LOADOUTS_MODULE = 'mods/codex/loadouts'
-local BINDING_ID = 'equippedstratagems.send_strategems'
-local BINDING_LABEL = 'Send Strategems'
-local POLL_SECONDS = 0.5
-local SETTINGS_RVA = 0x348e8f8
-local TABLE_RVA = 0x37cb600
-local MISSION_RVA = 0x33266a0
-local PLAYER_RVA = 0x3326468
-local INPUT_OWNER_RVA = 0x347cf18
-local SETTINGS_SIZE = 80280
-local RECORD_SIZE = 400
-local MAX_EQUIPPED = 16
--- Inline kinds at this offset are empty on the current build. Arrays that
--- start here are not the equipped list.
-local EMPTY_SLOT_OFFSET = 0x1D0
-local ARRAY_SPANS = {{0x130, 0x2E0}, {0x3B8, 0x440}}
-local MIN_LOADOUT = 2
-local MAX_CAPACITY = 32
-local DEFAULTS_MAP = 686968
-local ACTION_STATE_OFFSET = 808
-local ACTION_STATE_STRIDE = 32
-local BINDING_RECORD = 328
-local MAPPING_SIZE = 20
-local HOLD_TRIGGER = 2
-local KEYBOARD_DEVICE = 3
-local BUTTON_INPUT = 4
-local VK_LCONTROL = 0xA2
-local VK_RCONTROL = 0xA3
-local VK_CONTROL = 0x11
-local CTRL_BUTTON_NAMES = {'left ctrl', 'lctrl', 'left control'}
-
+local TABLE_RVA, MISSION_RVA = 0x37cb600, 0x33266a0
+local BINDING_ID, BINDING_LABEL = 'equippedstratagems.send_strategems', 'Send Strategems'
+local POLL_SECONDS, MAX_EQUIPPED = 0.5, 32
+local api = {api=1, mod='EquippedStratagems', revision=8, names=nil}
+local elapsed, binding_registered, binding_down = POLL_SECONDS, false, false
 local CATALOG = {
     ["40 k meltagun"] = "40-K Meltagun",
     ["500 kg"] = "Eagle 500kg Bomb",
@@ -268,16 +204,6 @@ local CATALOG = {
     ["wasp launcher"] = "StA-X3 W.A.S.P. Launcher",
 }
 
-local api = {api = 1, mod = 'EquippedStratagems', names = nil}
-local last_body = nil
-local have_names = false
-local elapsed = POLL_SECONDS
-local binding_registered = false
-local binding_down = false
-local menu_down = false
-local cached_owner = nil
-local cached_actions = nil
-
 local function fold(value)
     local folded = value:lower()
     folded = folded:gsub('w%.a%.s%.p%.', 'wasp')
@@ -314,77 +240,11 @@ local function as_name_list(value)
     return names
 end
 
-local function canonical(raw)
-    if not raw then return nil end
-    if #raw == 0 then return {} end
-    local names, seen = {}, {}
-    for index = 1, #raw do
-        local name = CATALOG[fold(raw[index])]
-        if name and not seen[name] then
-            seen[name] = true
-            names[#names + 1] = name
-        end
-    end
-    if #names == 0 then return nil end
-    return names
-end
-
 local function u32(bytes, offset)
     if type(bytes) ~= 'string' or offset < 0 or offset + 4 > #bytes then return nil end
     local a, b, c, d = bytes:byte(offset + 1, offset + 4)
     if not d then return nil end
     return a + b * 256 + c * 65536 + d * 16777216
-end
-
-local function best_catalog_name(blob)
-    if type(blob) ~= 'string' or blob == '' then return nil end
-    local best_name, best_len = nil, 3
-    local index = 1
-    while index <= #blob do
-        local byte = blob:byte(index)
-        if byte >= 32 and byte < 127 then
-            local finish = index
-            while finish <= #blob do
-                local next_byte = blob:byte(finish)
-                if next_byte < 32 or next_byte >= 127 then break end
-                finish = finish + 1
-            end
-            local word = blob:sub(index, finish - 1)
-            local name = CATALOG[fold(word)]
-            if name and #word > best_len then
-                best_name, best_len = name, #word
-            end
-            index = finish + 1
-        else
-            index = index + 1
-        end
-    end
-    return best_name
-end
-
-local function address_add(base, offset)
-    return base + offset
-end
-
-local function address_distance(address, base)
-    if type(address) == 'number' and type(base) == 'number' then
-        return address - base
-    end
-    local ok, ffi = pcall(require, 'ffi')
-    if not ok or type(ffi) ~= 'table' or type(ffi.cast) ~= 'function' then return nil end
-    return tonumber(ffi.cast('intptr_t', address) - ffi.cast('intptr_t', base))
-end
-
--- The compiled loadouts patch does not return a name array. Report only
--- whether package.loaded already holds one catalog list.
-local function loadouts_usable()
-    local loaded = package and package.loaded
-    local module = type(loaded) == 'table' and loaded[LOADOUTS_MODULE] or nil
-    if type(module) ~= 'table' then return false end
-    local list = as_name_list(module)
-    if not list or #list == 0 then return false end
-    local names = canonical(list)
-    return names ~= nil and #names > 0 and #names <= MAX_EQUIPPED
 end
 
 local function usable_address(value)
@@ -402,12 +262,12 @@ local function windows_reader()
         void *GetModuleHandleA(const char *name);
         void *GetCurrentProcess(void);
         int ReadProcessMemory(void *process, const void *address, void *buffer, size_t size, size_t *read);
-        unsigned short GetAsyncKeyState(int key);
+        uint64_t GetTickCount64(void);
     ]])
     local kernel = ffi.load('kernel32')
-    local user32_ok, user32 = pcall(ffi.load, 'user32')
     local process = kernel.GetCurrentProcess()
     local api = {}
+    function api.clock() return tonumber(kernel.GetTickCount64()) / 1000 end
     function api.module(name)
         local handle = kernel.GetModuleHandleA(name)
         if handle == nil then return nil end
@@ -434,416 +294,650 @@ local function windows_reader()
         if not usable_address(address) then return nil end
         return address
     end
-    function api.key_down(vk)
-        if not user32_ok or type(vk) ~= 'number' then return false end
-        local value = tonumber(user32.GetAsyncKeyState(vk))
-        if not value then return false end
-        if value < 0 then value = value + 65536 end
-        return value >= 0x8000
-    end
     return api
 end
 
--- StratagemInfo display names, keyed by kind. Same group walk as
--- BetterStratagemBounce navigation_patch.prepare, read-only.
-local function stratagem_names(api, game)
-    local buffer = api.pointer(api.read(game + SETTINGS_RVA, 8))
-    if not buffer then return nil end
-    local source = api.read(buffer, SETTINGS_SIZE)
-    if type(source) ~= 'string' or #source ~= SETTINGS_SIZE or u32(source, 0) ~= 11 then return nil end
-    local table_bytes = api.read(game + TABLE_RVA, 150 * 8)
-    if type(table_bytes) ~= 'string' or #table_bytes ~= 150 * 8 then return nil end
-    local offset, names, seen, records, by_address = 4, {}, {}, 0, {}
-    for _ = 1, 11 do
-        if u32(source, offset) ~= 0x444C444C or u32(source, offset + 4) ~= 1
-            or u32(source, offset + 8) ~= 0x30EB6399
-            or u32(source, offset + 16) ~= 1 or u32(source, offset + 20) ~= 0 then
-            return nil
+-- Direction IDs verified against live StratagemInfo definitions:
+-- 1=up, 2=right, 3=down, 4=left. Names/codes from the wheel catalog.
+local CODE_NAMES = {
+    ["113323"] = "Cargo Container",
+    ["11334242"] = "Call In Super Destroyer",
+    ["1133443"] = "Portable Comms Relay",
+    ["11412"] = "Eagle Rearm",
+    ["114233"] = "Seismic Probe",
+    ["1213"] = "Eagle Smoke Strike",
+    ["1214"] = "Eagle 110mm Rocket Pods",
+    ["122"] = "Eagle Strafing Run",
+    ["1231"] = "Eagle Napalm Airstrike",
+    ["1232"] = "Eagle Airstrike",
+    ["12332"] = "Eagle Cluster Bomb",
+    ["12333"] = "Eagle 500kg Bomb",
+    ["1242"] = "Eagle Gas Airstrike",
+    ["131313"] = "Tectonic Drill",
+    ["1321"] = "SoS Beacon",
+    ["13241"] = "Reinforce",
+    ["142311"] = "Dark Fluid Vessel",
+    ["2113"] = "SEAF Artillery",
+    ["21332"] = "Orbital Railcannon Strike",
+    ["221"] = "Orbital Precision Strike",
+    ["222"] = "Orbital Airburst Strike",
+    ["2231"] = "Orbital Smoke Strike",
+    ["2232"] = "Orbital Gas Strike",
+    ["223421"] = "Orbital Napalm Barrage",
+    ["223423"] = "Orbital 120mm HE Barrage",
+    ["2243"] = "Orbital EMS Strike",
+    ["2244"] = "Orbital Illumination Flare",
+    ["2311433"] = "Orbital 380mm HE Barrage",
+    ["23123"] = "Orbital Laser",
+    ["232323"] = "Orbital Walking Barrage",
+    ["2331441"] = "Tactical Video Camera",
+    ["23411"] = "Orbital Gatling Barrage",
+    ["31131"] = "LIFT-850 Jump Pack",
+    ["311342"] = "LIFT-860 Hover Pack",
+    ["31142"] = "RL-77 Airburst Rocket Launcher",
+    ["312141"] = "A/AC-8 Autocannon Sentry",
+    ["312142"] = "A/ARC-3 Tesla Tower",
+    ["31221"] = "A/MG-43 Machine Gun Sentry",
+    ["31223"] = "A/M-12 Mortar Sentry",
+    ["31224"] = "A/MLS-4X Rocket Sentry",
+    ["312311"] = "A/FLAM-40 Flame Sentry",
+    ["312312"] = "A/LAS-98 Laser Sentry",
+    ["31232"] = "A/M-23 EMS Mortar Sentry",
+    ["31233"] = "MS-11 Solo Silo",
+    ["31234"] = "A/GM-17 Gas Mortar Sentry",
+    ["3124"] = "A/G-16 Gatling Sentry",
+    ["3131"] = "Super Earth Flag",
+    ["314121"] = "AX/TX-13 Dog Breath",
+    ["314122"] = "AX/LAS-5 Rover",
+    ["314123"] = "AX/AR-23 Guard Dog",
+    ["314124"] = "AX/ARC-3 K-9",
+    ["314144"] = "AX/FLAM-75 Hot Dog",
+    ["314211"] = "SH-51 Directional Shield",
+    ["314222"] = "E/AT-12 Anti-Tank Emplacement",
+    ["314224"] = "E/MG-101 HMG Emplacement",
+    ["314242"] = "SH-32 Shield Generator Pack",
+    ["31431231"] = "NUX-223 Hellbomb",
+    ["32111"] = "B-100 Portable Hellbomb",
+    ["321121"] = "B/MD C4 Pack",
+    ["32142"] = "GL-52 De-Escalator",
+    ["323142"] = "RS-422 Railgun",
+    ["323144"] = "ARC-3 Arc Thrower",
+    ["323412"] = "S-11 Speargun",
+    ["32342"] = "E/GL-21 Grenadier Battlement",
+    ["3312"] = "Resupply",
+    ["33132"] = "StA-X3 W.A.S.P. Launcher",
+    ["33133"] = "FAF-14 Spear",
+    ["33142"] = "LAS-99 Quasar Cannon",
+    ["332311"] = "B/FLAM-80 Cremator",
+    ["3333311"] = "SSSD Delivery",
+    ["33412"] = "EAT-17 Expendable Anti-Tank",
+    ["33413"] = "EAT-411 Leveller",
+    ["33414"] = "EAT-700 Expendable Napalm",
+    ["334233"] = "Prospecting Drill",
+    ["334242"] = "FX-12 Shield Generator Relay",
+    ["334433"] = "Activate E-711 Extraction Drill",
+    ["3411"] = "MD-17 Anti-Tank Mines",
+    ["3412"] = "MD-6 Anti-Personnel Minefield",
+    ["34131"] = "FLAM-40 Flamethrower",
+    ["34132"] = "MLS-4X Commando",
+    ["34133"] = "MG-206 Heavy Machine Gun",
+    ["34134"] = "TX-41 Sterilizer",
+    ["341411"] = "GL-28 Belt-Fed Grenade Launcher",
+    ["34142"] = "PLAS-45 Epoch",
+    ["34143"] = "GL-21 Grenade Launcher",
+    ["341443"] = "40-K Meltagun",
+    ["34213"] = "APW-1 Anti-Materiel Rifle",
+    ["34221"] = "CQC-1 One True Flag",
+    ["34223"] = "CQC-9 Defoliation Tool",
+    ["34224"] = "GR-8 Recoilless Rifle",
+    ["342311"] = "M-1000 Maxigun",
+    ["342342"] = "LIFT-182 Warp Pack",
+    ["34241"] = "CQC-20 Breaching Hammer",
+    ["343112"] = "AC-8 Autocannon",
+    ["343113"] = "B-1 Supply Pack",
+    ["343114"] = "M-105 Stalwart",
+    ["34312"] = "MG-43 Machine Gun",
+    ["34314"] = "LAS-98 Laser Cannon",
+    ["343214"] = "MGX-42 Bullet Storm",
+    ["343314"] = "SH-20 Ballistic Shield Backpack",
+    ["3442"] = "MD-8 Gas Mines",
+    ["3443"] = "MD-I4 Incendiary Mines",
+    ["413233"] = "Hive Breaker Drill",
+    ["4321241"] = "EXO-51 Lumberer Exosuit",
+    ["4321431"] = "EXO-49 Emancipator Exosuit",
+    ["4321433"] = "EXO-45 Patriot Exosuit",
+    ["4323231"] = "M-102 Gunner FRV",
+    ["432343131"] = "TD-220 Bastion MK XVI",
+    ["432343142"] = "TD-110 Maelstrom",
+    ["4324231"] = "EXO-55 Breakthrough Exosuit",
+    ["4324311"] = "M-104 Incinerator FRV",
+    ["4344312"] = "M-103 Supply FRV",
+    ["44413233"] = "Aquifer Drill",
+}
+local options = {hide_cooldowns=true, include_grants=true, interval=0.5}
+local option_specs = {
+    {key='hide_cooldowns', spec={type='toggle', label='Hide Stratagems on Cooldown', default=true,
+        description='Remove stratagems while their cooldown or delivery timer is active, then restore them automatically. Does not check jamming or every mission restriction.'}},
+    {key='include_grants', spec={type='toggle', label='Include Mission Grants', default=true,
+        description='Include mission-granted utilities, equipment and objective stratagems in the exported list.'}},
+    {key='interval', spec={type='choice', label='Update Frequency', choices={'0.25 seconds','0.5 seconds','1 second'}, default=2,
+        description='How often the exported list is checked. Files are rewritten only when their contents change.'}},
+}
+local registered_options = {}
+local function service_options()
+    local menu = rawget(_G, 'ModOptionsMenu')
+    if type(menu) ~= 'table' or menu.api ~= 1 or type(menu.register_option) ~= 'function' or type(menu.get) ~= 'function' then return end
+    for _, row in ipairs(option_specs) do
+        local id = 'equippedstratagems.' .. row.key
+        if registered_options[id] ~= menu then
+            row.spec.mod = 'EquippedStratagems'
+            local ok, result = pcall(menu.register_option, id, row.spec)
+            if ok and result then registered_options[id] = menu end
         end
-        local root = offset + 24
-        local finish = root + u32(source, offset + 12)
-        if finish < root + 16 or finish > #source then return nil end
-        local count = u32(source, root + 8)
-        if not count or count < 1 or count > 149 then return nil end
-        local items = api.pointer(source, root)
-        local start = items and address_distance(items, buffer)
-        if not start or start < root + 16 or start + count * RECORD_SIZE > finish then return nil end
-        for index = 0, count - 1 do
-            local record = start + index * RECORD_SIZE
-            local kind = u32(source, record)
-            if not kind or kind < 1 or kind > 149 or seen[kind] then return nil end
-            local pointed = api.pointer(table_bytes, kind * 8)
-            if pointed ~= address_add(buffer, record) then return nil end
-            seen[kind], records = true, records + 1
-            by_address[address_add(buffer, record)] = kind
-            local record_bytes = source:sub(record + 1, record + RECORD_SIZE)
-            local name = best_catalog_name(record_bytes:sub(5))
-            if not name then
-                local tries = 0
-                for slot = 0, RECORD_SIZE - 8, 8 do
-                    local address = api.pointer(record_bytes, slot)
-                    if usable_address(address) then
-                        tries = tries + 1
-                        if tries > 4 then break end
-                        local text = api.read(address, 96)
-                        name = type(text) == 'string' and best_catalog_name(text) or nil
-                        if name then break end
+        if registered_options[id] == menu then
+            local ok, value = pcall(menu.get, id)
+            if ok then
+                if row.key == 'interval' then
+                    local interval = ({0.25,0.5,1})[value]
+                    if interval then options.interval = interval end
+                elseif type(value) == 'boolean' then options[row.key] = value end
+            end
+        end
+    end
+end
+-- Eagle Rearm eligibility mirrors 0x66D650: at least one Eagle definition
+-- (rearm kind +0xC8 == 49) must have fewer uses than its upgraded maximum.
+-- Maximum-use calculation: 0x879550, modifier application: 0x1377330.
+local function eagle_rearm_available(read, pointer, number, game, settings, payload, peer)
+    local function descriptor(kind)
+        assert(kind > 0 and kind < 150, 'Invalid Eagle definition')
+        local at = pointer(game+TABLE_RVA+kind*8)
+        assert(at >= settings and at+400 <= settings+80280, 'Eagle definition outside settings')
+        assert(number(at) == kind, 'Eagle definition mismatch')
+        return at
+    end
+    local function float(at)
+        local bits = number(at)
+        local exponent = math.floor(bits/8388608)%256
+        local mantissa = bits%8388608
+        assert(exponent < 255, 'Invalid Eagle modifier')
+        local value = exponent == 0 and mantissa*2^-149 or (1+mantissa/8388608)*2^(exponent-127)
+        return bits >= 2147483648 and -value or value
+    end
+    local manager = pointer(game+0x3326e68)
+    local modifier_count = number(manager+0x38d8)
+    assert(modifier_count <= 256, 'Invalid upgrade registry')
+    local function maximum(kind, inherited)
+        local desc = descriptor(kind)
+        local value = number(desc+0x50)
+        if value == 0xffffffff then return value end
+        local parent = number(desc+0x10c)
+        if not inherited and parent ~= 0 and number(desc+0x110)%2 == 1 then
+            value = value + maximum(parent,true) - number(descriptor(parent)+0x50)
+        end
+        if modifier_count > 0 then
+            local catalog = pointer(game+0x347cef8)
+            local first, last = number(catalog+0xd1d0c), number(catalog+0xd1d10)
+            assert(first <= last and last <= 4096, 'Invalid upgrade definition index')
+            local taggable = false
+            for i=first,last-1 do
+                local index = number(catalog+0xd1d48+i*4)
+                assert(index < 4096, 'Invalid upgrade definition record')
+                local record = catalog+0xb9ce4+index*24
+                if number(record+8) == number(desc+4) then
+                    local tag_index = number(record)
+                    assert(tag_index < 4096, 'Invalid upgrade tag index')
+                    local tags = catalog+0x1d70+tag_index*0xb8
+                    local count = number(tags)
+                    assert(count <= 45, 'Invalid upgrade tag count')
+                    for j=0,count-1 do
+                        if number(tags+4+j*4) == 0x5001f746 then taggable=true end
                     end
+                    break
                 end
             end
-            names[kind] = name
-        end
-        offset = finish
-    end
-    if offset ~= #source or records ~= 149 then return nil end
-    return names, by_address
-end
-
--- Mission type 1..7, same gate as ShallowWaterDiving and spawn_data.
--- 0 means the ship menu. nil means the mode block is not readable yet.
-local function mission_type(api, game)
-    local mode = api.pointer(api.read(game + MISSION_RVA, 8))
-    if not usable_address(mode) then return nil end
-    local bytes = api.read(mode, 0x44)
-    if type(bytes) ~= 'string' or #bytes ~= 0x44 then return nil end
-    if u32(bytes, 8) == 0 then return 0 end
-    return u32(bytes, 0x40)
-end
-
-local function dedupe_names(raw)
-    local names, seen = {}, {}
-    for index = 1, #raw do
-        local name = raw[index]
-        if name and not seen[name] then
-            seen[name] = true
-            names[#names + 1] = name
-        end
-    end
-    if #names == 0 then return nil end
-    return names
-end
-
-local function names_from_kinds(packed, count, by_kind)
-    local raw = {}
-    for index = 0, count - 1 do
-        local kind = u32(packed, index * 4)
-        local name = kind and by_kind[kind]
-        if not name then return nil end
-        raw[#raw + 1] = name
-    end
-    return dedupe_names(raw)
-end
-
-local function names_from_records(packed, count, by_address, by_kind, reader)
-    local raw = {}
-    for index = 0, count - 1 do
-        local address = reader.pointer(packed, index * 8)
-        local kind = address and by_address[address]
-        local name = kind and by_kind[kind]
-        if not name then return nil end
-        raw[#raw + 1] = name
-    end
-    return dedupe_names(raw)
-end
-
-local function prefer(best, priority, names, count)
-    if not names or not count or count < MIN_LOADOUT then return best end
-    if not best or priority > best.priority or (priority == best.priority and count > best.count) then
-        return {priority = priority, names = names, count = count}
-    end
-    return best
-end
-
--- Stingray array inside the player block: count, capacity, data pointer.
--- Record pointers win over packed kind ids. The empty inline field at
--- EMPTY_SLOT_OFFSET is never the start of this array.
-local function arrays_in_span(reader, bytes, start_at, finish, by_kind, by_address, best)
-    local offset = start_at
-    while offset + 16 <= finish do
-        if offset ~= EMPTY_SLOT_OFFSET then
-            local count = u32(bytes, offset)
-            local capacity = u32(bytes, offset + 4)
-            local data = reader.pointer(bytes, offset + 8)
-            if count and capacity and data and count >= MIN_LOADOUT and count <= MAX_EQUIPPED
-                and capacity >= count and capacity <= MAX_CAPACITY then
-                local pointers = reader.read(data, count * 8)
-                if type(pointers) == 'string' and #pointers == count * 8 then
-                    best = prefer(best, 3, names_from_records(pointers, count, by_address, by_kind, reader), count)
+            if taggable then
+                local modifier_index
+                for i=0,43 do
+                    if number(game+0x32ea690+i*0x30) == 0x5001f746 then modifier_index=i; break end
                 end
-                local packed = reader.read(data, count * 4)
-                if type(packed) == 'string' and #packed == count * 4 then
-                    best = prefer(best, 2, names_from_kinds(packed, count, by_kind), count)
-                end
-            end
-        end
-        offset = offset + 8
-    end
-    return best
-end
-
--- Inline catalog kinds, terminated by 0 or 0xFFFFFFFF. The empty field is a
--- hard gap so a zero there cannot end the list before the real slots.
-local function inline_in_span(bytes, start_at, finish, by_kind, best)
-    local offset = start_at
-    while offset + 12 <= finish do
-        if offset == EMPTY_SLOT_OFFSET then
-            offset = offset + 4
-        else
-            local raw, at = {}, offset
-            while at + 4 <= finish and at ~= EMPTY_SLOT_OFFSET do
-                local kind = u32(bytes, at)
-                if not kind or kind == 0 or kind == 0xFFFFFFFF then break end
-                local name = by_kind[kind]
-                if not name then break end
-                raw[#raw + 1] = name
-                at = at + 4
-            end
-            local ended = at ~= offset and (at == EMPTY_SLOT_OFFSET or at + 4 > finish
-                or u32(bytes, at) == 0 or u32(bytes, at) == 0xFFFFFFFF)
-            if ended and #raw >= 3 then
-                best = prefer(best, 1, dedupe_names(raw), #raw)
-            end
-            if at > offset then offset = at else offset = offset + 4 end
-        end
-    end
-    return best
-end
-
-local function equipped_slots(reader, player, by_kind, by_address)
-    local best = nil
-    for index = 1, #ARRAY_SPANS do
-        local span = ARRAY_SPANS[index]
-        best = arrays_in_span(reader, player, span[1], span[2], by_kind, by_address, best)
-        best = inline_in_span(player, span[1], span[2], by_kind, best)
-    end
-    if not best then return nil, nil end
-    return best.names, best.count
-end
-
-local function ctrl_button_ids()
-    local engine = rawget(_G, 'stingray')
-    local keyboard = type(engine) == 'table' and engine.Keyboard or nil
-    local button_id = type(keyboard) == 'table' and keyboard.button_id or nil
-    if type(button_id) ~= 'function' then return nil end
-    local ids = {}
-    for _, name in ipairs(CTRL_BUTTON_NAMES) do
-        local ok, id = pcall(button_id, name)
-        local numeric = ok and tonumber(id) or nil
-        if numeric and numeric >= 0 and numeric <= 255 and numeric % 1 == 0 then
-            ids[numeric] = true
-        end
-    end
-    if next(ids) == nil then return nil end
-    return ids
-end
-
-local function fallback_ctrl(reader)
-    if type(reader) ~= 'table' or type(reader.key_down) ~= 'function' then return false end
-    for _, vk in ipairs({VK_LCONTROL, VK_RCONTROL, VK_CONTROL}) do
-        local ok, down = pcall(reader.key_down, vk)
-        if ok and down then return true end
-    end
-    return false
-end
-
--- Returns the input owner and the actions whose shipped keyboard default is
--- Left Ctrl. Hold actions are preferred. nil actions means the defaults map
--- was readable but Left Ctrl was not on it.
-local function menu_actions(reader, game)
-    local ids = ctrl_button_ids()
-    if not ids then return nil, nil end
-    local owner = reader.pointer(reader.read(game + INPUT_OWNER_RVA, 8))
-    if not usable_address(owner) then return nil, nil end
-    if cached_actions and cached_owner == owner then return owner, cached_actions end
-    local capacity = u32(reader.read(owner + DEFAULTS_MAP + 8, 4) or '', 0)
-    if capacity ~= 256 then return nil, nil end
-    local map = reader.pointer(reader.read(owner + DEFAULTS_MAP, 8))
-    if not usable_address(map) then return nil, nil end
-    local blob = reader.read(map, 256 * BINDING_RECORD)
-    if type(blob) ~= 'string' or #blob ~= 256 * BINDING_RECORD then return nil, nil end
-    local hold, other = {}, {}
-    for index = 0, 255 do
-        local base = index * BINDING_RECORD
-        local code = u32(blob, base)
-        local count = u32(blob, base + 4)
-        if code and count and count > 0 and count <= 16 then
-            local group = math.floor(code / 65536)
-            local action = code % 65536
-            if group < 64 and action < 97 then
-                for mapping_index = 0, count - 1 do
-                    local at = base + 8 + mapping_index * MAPPING_SIZE
-                    local first = blob:byte(at + 1)
-                    local key = blob:byte(at + 5)
-                    if first and key and first % 16 == KEYBOARD_DEVICE
-                        and math.floor(first / 16) % 16 == BUTTON_INPUT and ids[key] then
-                        local entry = {group = group, action = action}
-                        if u32(blob, at + 8) == HOLD_TRIGGER then
-                            hold[#hold + 1] = entry
-                        else
-                            other[#other + 1] = entry
+                if modifier_index then
+                    for i=0,modifier_count-1 do
+                        local registration = manager+0x38e0+i*16
+                        if number(registration+8) == 0x119 then
+                            local owner = pointer(registration)
+                            for j=0,7 do
+                                local record = owner+j*32
+                                if read(record,8) == peer then
+                                    local word = number(record+0x10+math.floor(modifier_index/32)*4)
+                                    if math.floor(word/2^(modifier_index%32))%2 == 1 then
+                                        local spec = game+0x330d2e0+modifier_index*0x30
+                                        local amount = float(spec+0x28)
+                                        value = number(spec+0x2c) == 0 and value*amount or value+amount
+                                        value = math.floor(value)
+                                    end
+                                    break
+                                end
+                            end
                         end
                     end
                 end
             end
         end
+        assert(value >= 0 and value <= 1024, 'Invalid Eagle maximum uses')
+        return value
     end
-    local chosen = #hold > 0 and hold or (#other > 0 and other or nil)
-    if not chosen then return owner, nil end
-    cached_owner, cached_actions = owner, chosen
-    return owner, chosen
-end
-
-local function action_down(reader, owner, entry)
-    local index = entry.group * 97 + entry.action
-    local byte = reader.read(owner + ACTION_STATE_OFFSET + ACTION_STATE_STRIDE * index, 1)
-    return type(byte) == 'string' and byte ~= '\0'
-end
-
-local function stratagem_menu_open(reader, game)
-    local owner, actions = menu_actions(reader, game)
-    if actions then
-        for _, entry in ipairs(actions) do
-            if action_down(reader, owner, entry) then return true end
+    local count = number(payload+0x788)
+    for i=0,count-1 do
+        local entry = payload+0x188+i*0x30
+        local kind = number(entry)
+        if kind ~= 0 and number(descriptor(kind)+0xc8) == 49 then
+            local remaining = number(entry+4)
+            if remaining < maximum(kind,false) then return true end
         end
-        return false
     end
-    return fallback_ctrl(reader)
+    return false
 end
-
-local function probe_equipped()
-    local probe = {loadouts = loadouts_usable(), game = false, menu = false, count = nil, names = nil}
-    pcall(function()
-        local reader = windows_reader()
-        if type(reader) ~= 'table' or type(reader.module) ~= 'function' then return end
-        local game = reader.module('game.dll')
-        if not usable_address(game) then return end
-        probe.game = true
-        probe.menu = stratagem_menu_open(reader, game)
-        local mission = mission_type(reader, game)
-        local player = reader.pointer(reader.read(game + PLAYER_RVA, 8))
-        if not usable_address(player) then return end
-        local bytes = reader.read(player, 0x440)
-        if type(bytes) ~= 'string' or #bytes ~= 0x440 then return end
-        local by_kind, by_address = stratagem_names(reader, game)
-        local names, count = equipped_slots(reader, bytes, by_kind or {}, by_address or {})
-        probe.count = count
-        -- Ship menu slots are not the mission loadout. A count of zero is
-        -- not a loadout either: empty +0x1D0 must not be the only line once
-        -- this menu is open in a mission.
-        if not mission or mission < 1 or mission > 7 then return end
-        if not names or not count or count < MIN_LOADOUT then return end
-        probe.names = names
-    end)
-    return probe
-end
-
-local function write_body(body)
-    if body == last_body then return end
+-- Selected-loadout reader. Layout evidence: installed DiverKit
+-- diverkit-alpha8.10.1-preview-compact-badge-20260927 (read_equipment).
+-- The player-manager block is NOT an array of equipped StratagemInfo IDs.
+local BUILD_STAMP = 1790161983
+local MANAGER_RVA, SESSION_RVA = 0x3326e68, 0x347cef0
+local DIAGNOSTICS = 'EquippedStratagems_diagnostics.log'
+local last_files, native_reader = {}, nil
+local initialized, selected, was_in_mission = false, nil, false
+local last_tick = nil
+local last_diagnostic, pending_write = '', false
+local function write_file(filename, body, force)
+    if not force and last_files[filename] == body then return true end
     local loader = rawget(_G, 'CowboyBingusModLoader')
-    local open_log = loader and loader.open_log
-    if type(open_log) ~= 'function' then return end
-    local ok, file = pcall(open_log, LOG_NAME)
-    if not ok or not file then return end
-    local wrote = pcall(function()
-        file:write(body)
-        if body ~= '' and body:sub(-1) ~= '\n' then file:write('\n') end
-        file:close()
+    if type(loader) ~= 'table' or type(loader.open_log) ~= 'function' then
+        return false, 'Shared loader open_log is unavailable'
+    end
+    local opened, file = pcall(loader.open_log, filename)
+    if not opened or not file then return false, 'Cannot open ' .. filename end
+    -- Lua file methods report ordinary I/O failures with nil, not an exception.
+    local ok, err = pcall(function()
+        assert(file:write(body))
+        assert(file:flush())
     end)
-    if wrote then last_body = body end
-end
-
-local function write_names(names, count)
-    have_names = true
-    local body = table.concat(names, '\n')
-    if count and count >= MIN_LOADOUT then
-        body = body .. '\n# count=' .. tostring(count)
-    end
-    write_body(body)
-end
-
-local function write_status(probe)
-    if have_names then return end
-    local count = probe.count == nil and 'unread' or tostring(probe.count)
-    write_body('# loadouts=' .. (probe.loadouts and 'yes' or 'no')
-        .. '\n# game.dll=' .. (probe.game and 'yes' or 'no')
-        .. '\n# menu=' .. (probe.menu and 'open' or 'closed')
-        .. '\n# count=' .. count)
-end
-
-local function flush_loadout(allow_names)
-    local probe = probe_equipped()
-    local names = allow_names and probe.names and canonical(probe.names) or nil
-    if names and #names > 0 and probe.count and probe.count >= MIN_LOADOUT then
-        api.names = names
-        write_names(names, probe.count)
-    else
-        write_status(probe)
-    end
-end
-
-local function publish_list(raw)
-    local list = as_name_list(raw)
-    if not list then return nil end
-    return canonical(list)
-end
-
-function api.publish(names)
-    local list = publish_list(names)
-    if not list then return false end
-    api.names = list
-    write_names(list)
+    local closed, result, close_error = pcall(function() return file:close() end)
+    if not ok then return false, tostring(err) end
+    if not closed or not result then return false, tostring(close_error or result) end
+    last_files[filename] = body
     return true
+end
+
+local function reader_api()
+    local injected = rawget(_G, 'EquippedStratagemsReader')
+    if type(injected) == 'table' then return injected end
+    if not native_reader then native_reader = windows_reader() end
+    return assert(native_reader, '64-bit LuaJIT FFI is unavailable')
+end
+
+local function resolve_name(read, pointer, number, game, settings, kind, selectable)
+    local descriptor = pointer(game + TABLE_RVA + kind * 8)
+    assert(descriptor >= settings and descriptor+400 <= settings+80280, 'Descriptor outside stratagem settings')
+    assert(number(descriptor) == kind, 'Stratagem descriptor identity mismatch')
+    if selectable then assert(math.floor(number(descriptor + 0x80)/2)%2 == 1, 'Stratagem is not selectable') end
+    -- Live definitions store their direction array at +0x40, with
+    -- a u32 count at +0x48. Do not index the stale debug-name table.
+    local code_pointer, code_count = pointer(descriptor+0x40), number(descriptor+0x48)
+    assert(code_count >= 1 and code_count <= 12, 'Invalid stratagem input length')
+    assert(code_pointer >= settings and code_pointer+code_count*4 <= settings+80280,
+        'Stratagem input array outside settings')
+    local packed, directions = read(code_pointer,code_count*4), {}
+    for at=0,code_count-1 do
+        local direction = u32(packed,at*4)
+        assert(direction >= 1 and direction <= 4,'Invalid stratagem direction')
+        directions[#directions+1] = tostring(direction)
+    end
+    local code = table.concat(directions)
+-- Two wheel entries share this code. The supported build's definition 128
+-- is explicitly "MISSIONS. Upload Discovery", not Reinforcement Pods.
+    local name = (code == '42111' and kind == 128 and 'Upload Data') or CODE_NAMES[code]
+    assert(name, string.format('Unsupported stratagem code %s (id %d); update the name catalog',code,kind))
+    return name, code
+end
+
+local function snapshot(reader, game)
+    local watched = {}
+    local function read(at, size)
+        local bytes = reader.read(at, size)
+        assert(type(bytes) == 'string' and #bytes == size, string.format('Unreadable loadout field +%X', at-game))
+        watched[#watched+1] = {at, size, bytes}
+        return bytes
+    end
+    local function pointer(at)
+        return assert(reader.pointer(read(at, 8)), 'Loadout pointer unavailable')
+    end
+    local function number(at) return assert(u32(read(at, 4), 0)) end
+    -- Explicitly reject another build instead of interpreting arbitrary memory.
+    assert(read(game, 2) == 'MZ', 'Invalid game module header')
+    local pe = number(game + 0x3c)
+    assert(pe >= 64 and pe <= 65536, 'Invalid PE header offset')
+    assert(read(game + pe, 4) == 'PE\0\0', 'Invalid PE signature')
+    assert(number(game + pe + 8) == BUILD_STAMP, 'Unsupported game build; reader needs an updated layout')
+    local function finish()
+        for _, field in ipairs(watched) do
+            assert(reader.read(field[1], field[2]) == field[3], "Loadout changed during read; retrying")
+        end
+    end
+    return read, pointer, number, finish
+end
+
+local function selection(reader, game)
+    local read, pointer, number, finish = snapshot(reader, game)
+    local manager = pointer(game + MANAGER_RVA)
+    local bucket = read(manager + 0x62a0, 24)
+    local count = u32(bucket, 0)
+    if count == 0 then return nil, 'Selection screen is not registered' end
+    assert(count == 1 and u32(bucket, 16) == 0xe5, 'Unexpected loadout registry layout')
+    local owner = assert(reader.pointer(bucket, 8), 'Loadout owner unavailable')
+    local slot = number(owner + 0x27d0)
+    assert(slot < 4, 'Local player slot unavailable')
+    local session = pointer(game + SESSION_RVA)
+    local peer = read(session + 0xb398, 8)
+    assert(peer ~= string.rep('\0', 8), 'Local player identity unavailable')
+    local record = owner + slot * 0x9f0
+    assert(read(record + 0x9f8, 8) == peer, 'Loadout does not belong to the local player')
+    local card
+    for i = 0, 3 do
+        local candidate = owner + 0x53a78 + i * 0x1ee18
+        local header = read(candidate + 0x1edf0, 16)
+        if reader.pointer(header) == record + 0x10 and u32(header, 12) == slot then
+            assert(not card, 'Ambiguous local player card')
+            card = candidate
+        end
+    end
+    assert(card, 'Local player card unavailable')
+    local available, available_count = {}, number(record + 0x798)
+    assert(available_count <= 32, 'Invalid payload stratagem count')
+    for i = 0, available_count - 1 do
+        local kind = number(record + 0x198 + i * 0x30)
+        assert(kind < 150, 'Invalid payload stratagem ID')
+        available[kind] = (available[kind] or 0) + 1
+    end
+    local settings = pointer(game + 0x348e8f8)
+    local names, details = {}, {}
+    for i = 0, 3 do
+        local kind = number(card + 0x5b78 + 0x8ec0 + 0x128c + i * 0x12a8)
+        assert(kind < 150, 'Invalid selected stratagem ID')
+        if kind ~= 0 then
+            assert(available[kind] and available[kind] > 0, 'Selected slot does not match the local payload')
+            available[kind] = available[kind] - 1
+            local name, code = resolve_name(read, pointer, number, game, settings, kind, true)
+            names[#names+1] = name
+            details[#details+1] = string.format('slot=%d id=%d code=%s name=%s', i+1, kind, code, name)
+        end
+    end
+    finish()
+    return {names=names, details=details, source='local selection screen'}, 'Selection captured'
+end
+
+-- SEAF's payload entry exists before the objective enables the artillery.
+-- Mirror the supported build's gate at 0x66CA6C and ammunition enumeration
+-- at 0xB56ECE: controller type 0x65, live ammunition count and enabled order.
+local function upload_available(read, pointer, number, game)
+    -- Native 0x6F24D0 writes the local-player in-range flag at config +0x26.
+    -- Check its prerequisite objective flags too: an old proximity bit alone
+    -- must not reactivate a completed or disabled objective (0x6F3100).
+    local controller = pointer(game+0x3326530)
+    local count = number(controller+0xc)
+    assert(count <= 256, 'Invalid upload objective count')
+    if count == 0 then return false end
+    local configs, states = pointer(controller+0x38), pointer(controller+0x40)
+    for i=0,count-1 do
+        local config, state = configs+i*0x2c, states+i*0x40
+        local flags = read(config+0x24,6)
+        local status = read(state+0x28,1):byte()
+        local tail = read(state+0x38,2)
+        local active = status ~= 0 or flags:byte(5) ~= 0
+            or (flags:byte(6) ~= 0 and number(state) > 0)
+        if active and tail:byte(2) == 0 and flags:byte(1) == 0 and flags:byte(2) == 0
+            and not (flags:byte(6) ~= 0 and tail:byte(1) ~= 0)
+            and flags:byte(3) ~= 0 then return true end
+    end
+    return false
+end
+
+local function seaf_available(read, pointer, number, game)
+    local manager = pointer(game + MANAGER_RVA)
+    local count = number(manager+0x1cb8)
+    assert(count <= 256, 'Invalid mission availability registry count')
+    local invalid_unit = number(game+0x3483c4c)
+    local found, ready = false, true
+    for i=0,count-1 do
+        local registration = manager+0x1cc0+i*0x10
+        if number(registration+8) == 0x65 then
+            found = true
+            local controller = pointer(registration)
+            local shells = number(controller+0xc)
+            assert(shells <= 256, 'Invalid SEAF ammunition record count')
+            local best_order, unit = 0xffffffff, invalid_unit
+            if shells > 0 then
+                local ammo = pointer(controller+0x50)
+                local units = pointer(controller+0x38)
+                for j=0,shells-1 do
+                    local shell = ammo+j*0x2c
+                    local order = number(shell+0x24)
+                    if order ~= 0xffffffff and number(shell) ~= 0 and order < best_order then
+                        best_order = order
+                        unit = number(pointer(units+j*8)+8)
+                    end
+                end
+            end
+            if unit == invalid_unit then ready = false end
+        end
+    end
+    return found and ready
+end
+
+-- Supported-build native HUD (0x1834A10/0x1836510) reads this same
+-- peer-owned payload. Entries include grants; cooldown/charge timers are not
+-- membership fields and must not make an otherwise stable snapshot fail.
+local function mission_loadout(reader, game)
+    local read, pointer, number, finish = snapshot(reader, game)
+    local session = pointer(game + SESSION_RVA)
+    local peer = read(session + 0xb398, 8)
+    assert(peer ~= string.rep('\0',8), 'Local player identity unavailable')
+    local root = pointer(game + 0x347ce50)
+    local count = number(root + 0x2d200)
+    assert(count <= 32, 'Invalid mission player count')
+    local payload
+    for i=0,count-1 do
+        local record = root + i*0x1690
+        if read(record,8) == peer then
+            assert(not payload, 'Ambiguous local mission payload')
+            payload = record + 0x38
+        end
+    end
+    assert(payload, 'Local mission payload unavailable')
+    local entries = number(payload + 0x788)
+    assert(entries <= 32, 'Invalid mission stratagem count')
+    local settings = pointer(game + 0x348e8f8)
+    -- Native HUD compares entry +0x18 (cooldown) and +0x20 (delivery)
+    -- against the simulation clock at *(game+0x3326348)+0x18.
+    -- Reinforce uses the shared mission timer rather than entry +0x18.
+    local now
+    if options.hide_cooldowns then
+        local clock = pointer(game + 0x3326348)
+        now = reader.read(clock+0x18,8) -- Clock advances during a snapshot.
+        assert(type(now)=='string' and #now==8, 'Simulation clock unavailable')
+    end
+    local function future(timestamp)
+        local hi, lo = u32(timestamp,4), u32(timestamp,0)
+        local now_hi, now_lo = u32(now,4), u32(now,0)
+        return hi > now_hi or (hi == now_hi and lo > now_lo)
+    end
+    local names, details, seen = {}, {}, {}
+    for i=0,entries-1 do
+        local entry = payload + 0x188 + i*0x30
+        local kind = number(entry)
+        assert(kind < 150, 'Invalid mission stratagem ID')
+        if kind ~= 0 then
+            local granted = read(entry+9,1):byte() ~= 0
+            local name, code = resolve_name(read, pointer, number, game, settings, kind, false)
+            local cooling = false
+            if options.hide_cooldowns then
+                local cooldown = read(entry+0x18,8)
+                if kind == 124 then
+                    local mission_state = pointer(game + MISSION_RVA)
+                    cooldown = number(mission_state+8) ~= 0 and read(mission_state+0x50,8) or string.rep('\0',8)
+                end
+                cooling = future(cooldown) or future(read(entry+0x20,8))
+            end
+            local available, gate = true, 'payload'
+            if kind == 28 then
+                local checked, result = pcall(seaf_available, read, pointer, number, game)
+                available = checked and result == true
+                gate = checked and (available and 'seaf_enabled' or 'seaf_locked_or_empty') or 'seaf_state_unreadable'
+            elseif kind == 128 then
+                local checked, result = pcall(upload_available, read, pointer, number, game)
+                available = checked and result == true
+                gate = checked and (available and 'upload_in_range' or 'upload_inactive_or_out_of_range') or 'upload_state_unreadable'
+            elseif kind == 49 then
+                local checked, result = pcall(eagle_rearm_available, read, pointer, number, game, settings, payload, peer)
+                available = checked and result == true
+                gate = checked and (available and 'eagle_uses_spent' or 'eagle_fully_stocked') or 'eagle_state_unreadable'
+            end
+            local included = available and (options.include_grants or not granted) and not cooling
+            if included and not seen[name] then names[#names+1]=name; seen[name]=true end
+            details[#details+1] = string.format('entry=%d id=%d granted=%s cooldown=%s gate=%s exported=%s code=%s name=%s',i+1,kind,tostring(granted),tostring(cooling),gate,tostring(included),code,name)
+        end
+    end
+    finish()
+    return {names=names, details=details, source='local mission payload'}, 'Mission list captured'
+end
+
+local function in_mission(reader, game)
+    local pointer = reader.pointer(reader.read(game + MISSION_RVA, 8))
+    if not pointer then return nil end
+    local bytes = reader.read(pointer, 0x44)
+    if type(bytes) ~= 'string' or #bytes ~= 0x44 then return nil end
+    if u32(bytes, 8) == 0 then return false end
+    local mode = u32(bytes, 0x40)
+    return mode >= 1 and mode <= 7
+end
+
+local function flush_loadout(force)
+    service_options()
+    if not initialized then
+        local ok, why = write_file(LOG_NAME, '', true)
+        if not ok then api.status = why; return false end
+        initialized = true
+    end
+    local mission, state, reason
+    local ok, failure = pcall(function()
+        local reader = reader_api()
+        local game = assert(reader.module('game.dll'), 'game.dll unavailable')
+        assert(usable_address(game), 'Invalid game module address')
+        mission = in_mission(reader, game)
+        if mission == true then
+            state, reason = mission_loadout(reader, game)
+        else
+            state, reason = selection(reader, game)
+        end
+    end)
+    if not ok then
+        reason = tostring(failure)
+        if reason:find('Unsupported stratagem code',1,true) then selected = nil end
+    end
+    if state then
+        selected = state
+    elseif mission == false and was_in_mission then
+        selected = nil
+    end
+    if mission ~= nil then was_in_mission = mission end
+    local names = selected and selected.names or {}
+    local body = #names > 0 and table.concat(names, '\n') .. '\n' or ''
+    local wrote, write_error = write_file(LOG_NAME, body, force or pending_write)
+    -- Framed companion snapshot lets consumers distinguish an authoritative
+    -- empty list from an incomplete concurrent read or a legacy missing log.
+    local frame = 'EquippedStratagems snapshot 1\ncount=' .. #names .. '\n' .. body .. 'END\n'
+    local snapshot_ok, snapshot_error = write_file('EquippedStratagems_state.log', frame, force or pending_write)
+    if not snapshot_ok then wrote=false; write_error=snapshot_error end
+    pending_write = not wrote
+    if wrote then api.names = names end
+    api.status = wrote and (state and 'captured' or (selected and 'retained last valid list' or 'waiting for local loadout')) or write_error
+    last_diagnostic = 'EquippedStratagems revision 8\nstatus=' .. tostring(api.status)
+        .. '\nhide_cooldowns=' .. tostring(options.hide_cooldowns) .. '\ninclude_grants=' .. tostring(options.include_grants)
+        .. '\nreader=' .. tostring(reason) .. '\ncount=' .. #names
+        .. '\nmission=' .. tostring(mission)
+        .. '\nsource=' .. (state and state.source or (selected and ('cached '..selected.source) or 'none'))
+        .. '\n'
+    if selected then
+        last_diagnostic = last_diagnostic .. table.concat(selected.details, '\n') .. '\n'
+    end
+    write_file(DIAGNOSTICS, last_diagnostic, force)
+    return wrote and selected ~= nil
+end
+
+function api.refresh() return flush_loadout(true) end
+
+function api.publish(raw)
+    local list = as_name_list(raw)
+    if not list or #list > MAX_EQUIPPED then return false end
+    local names = {}
+    for _, name in ipairs(list) do
+        local resolved = CATALOG[fold(name)]
+        if not resolved then return false end
+        names[#names+1] = resolved
+    end
+    local body = #names > 0 and table.concat(names, '\n') .. '\n' or ''
+    local ok = write_file(LOG_NAME, body, true)
+    local framed = write_file('EquippedStratagems_state.log',
+        'EquippedStratagems snapshot 1\ncount=' .. #names .. '\n' .. body .. 'END\n', true)
+    ok = ok and framed
+    if ok then api.names = names end
+    return ok
 end
 
 local function service_binding()
     local menu = rawget(_G, 'ModBindingsMenu')
     if type(menu) ~= 'table' or menu.api ~= 1 or type(menu.register_binding) ~= 'function' then return end
     if not binding_registered then
-        local called, ok = pcall(menu.register_binding, BINDING_ID, BINDING_LABEL, nil, {category = 'EquippedStratagems'})
+        local called, ok = pcall(menu.register_binding, BINDING_ID, BINDING_LABEL, nil, {category='EquippedStratagems'})
         if not called or not ok then return end
         binding_registered = true
     end
     if type(menu.is_down) ~= 'function' then return end
-    local called, down = pcall(menu.is_down, BINDING_ID)
-    if not called or down == nil then return end
-    if down and not binding_down then
-        flush_loadout(true)
+    local ok, down = pcall(menu.is_down, BINDING_ID)
+    if ok then
+        if down and not binding_down then flush_loadout(true) end
+        binding_down = down
     end
-    binding_down = down
-end
-
-local function menu_is_open()
-    local open = false
-    pcall(function()
-        local reader = windows_reader()
-        if type(reader) ~= 'table' or type(reader.module) ~= 'function' then return end
-        local game = reader.module('game.dll')
-        if not usable_address(game) then return end
-        open = stratagem_menu_open(reader, game)
-    end)
-    return open
-end
-
-local function service_menu()
-    local open = menu_is_open()
-    if open and not menu_down then
-        flush_loadout(true)
-    end
-    menu_down = open
 end
 
 rawset(_G, 'EquippedStratagems', api)
-
 local previous_update = rawget(_G, 'update')
-update = function(dt, ...)
-    service_menu()
-    service_binding()
-    elapsed = elapsed + (type(dt) == 'number' and dt or 0)
-    if elapsed >= POLL_SECONDS then
-        elapsed = 0
-        flush_loadout(menu_down)
+local function after_update(dt, ...)
+    local ok, why = pcall(function()
+        service_binding()
+        -- Some update chains supply no dt. Use Windows monotonic time when
+        -- available so that a successful first export is not the last poll.
+        local clock_ok, now = pcall(function()
+            local reader = reader_api()
+            return type(reader.clock) == 'function' and reader.clock() or nil
+        end)
+        local step = type(dt) == 'number' and dt >= 0 and dt or 0
+        if clock_ok and type(now) == 'number' then
+            if last_tick then step = math.max(0, now-last_tick) end
+            last_tick = now
+        end
+        elapsed = elapsed + step
+        if elapsed >= options.interval then elapsed = 0; flush_loadout(false) end
+    end)
+    if not ok then
+        api.status = tostring(why)
+        write_file(DIAGNOSTICS, 'runtime_error=' .. tostring(why) .. '\n')
     end
-    if type(previous_update) == 'function' then return previous_update(dt, ...) end
+    return ...
 end
-
-print('[EquippedStratagems] loaded')
+update = function(dt, ...)
+    if type(previous_update) == 'function' then
+        return after_update(dt, previous_update(dt, ...))
+    end
+    return after_update(dt)
+end
+print('[EquippedStratagems] revision 8 loaded')

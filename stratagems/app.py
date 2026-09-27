@@ -25,7 +25,7 @@ from stratagems.game_focus import helldivers_focused
 from stratagems.glyphs import cluster_glyphs
 from stratagems.hdr import HdrCurve, curve_from_config
 from stratagems.learn import LearnWindow
-from stratagems.loadout_log import read_logged_loadout
+from stratagems.loadout_log import read_logged_loadout, read_live_loadout, recognition_block_reason
 from stratagems.ocr import OcrError, ScanResult, capture_region, save_bbox, scan_image
 from stratagems.overlay import WHEEL_X, WHEEL_Y, RadialOverlay
 from stratagems.placement import Monitor, list_monitors, wheel_top_left
@@ -53,6 +53,7 @@ class App:
         self._learn_window: LearnWindow | None = None
         self._cache: list[LoadoutEntry] = []
         self._cache_notice = ""
+        self._live_log: list[LoadoutEntry] = []
         self._capture_cb: object = None
         self._capture_ready = False
         self._send_lock = threading.Lock()
@@ -81,6 +82,7 @@ class App:
         self.overlay.set_transparent(self.config.transparent_wheel)
         self.root.protocol("WM_DELETE_WINDOW", self.root.quit)
         self._set_initial_status()
+        self.root.after(250, self._watch_live_loadout)
 
     def run(self, dump: Path | None = None) -> None:
         self._start_listener()
@@ -106,6 +108,8 @@ class App:
         self.present(left, top, dry_run=True)
 
     def rescan(self) -> None:
+        if self._recognition_blocked():
+            return
         if self.config.manual_override:
             self.settings.set_status("Manual override is on, so the scan is skipped.")
             return
@@ -132,6 +136,8 @@ class App:
         )
     def scan(self) -> None:
         """Read the calibrated region once. Opening the wheel does not call this."""
+        if self._recognition_blocked():
+            return
         region = self.config.region
         if region is None:
             return
@@ -146,7 +152,11 @@ class App:
         def work() -> None:
             image: Image.Image | None = None
             try:
+                if self._recognition_blocked(notify=False):
+                    return
                 image = capture_region(region.left, region.top, region.width, region.height)
+                if self._recognition_blocked(notify=False):
+                    return
                 result = scan_image(
                     image,
                     hdr=hdr,
@@ -166,8 +176,16 @@ class App:
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _recognition_blocked(self, *, notify: bool = True) -> bool:
+        reason = recognition_block_reason(self.config.ocr_fallback, self.config.manual_override)
+        if reason and notify:
+            self.settings.set_status(reason)
+        return reason is not None
+
     def learn(self) -> None:
         """Capture arrow glyphs once and ask the user to tag each unique shape."""
+        if self._recognition_blocked():
+            return
         region = self.config.region
         if region is None:
             self.settings.set_status("Calibrate the stratagem list before Learn.")
@@ -178,6 +196,8 @@ class App:
 
         def work() -> None:
             try:
+                if self._recognition_blocked(notify=False):
+                    return
                 image: Image.Image | None = capture_region(region.left, region.top, region.width, region.height)
                 error = None
             except (OcrError, OSError) as exc:
@@ -196,6 +216,8 @@ class App:
         hdr: bool,
         curve: HdrCurve,
     ) -> None:
+        if self._recognition_blocked():
+            return
         if error or image is None:
             message = error or "Could not capture the stratagem list."
             self.settings.set_status(message)
@@ -256,12 +278,34 @@ class App:
             if len(names) > MAX_WHEEL:
                 notice += f" · SHOWING {MAX_WHEEL}"
             return entries, notice
+        snapshot = read_live_loadout()
+        if snapshot is not None:
+            if snapshot.entries is not None:
+                self._live_log = snapshot.entries
+            entries = self._live_log
+            notice = "LIVE LOADOUT FILE" if entries else "NO STRATAGEMS IN LIVE EXPORT"
+            if len(entries) > MAX_WHEEL:
+                notice += f" · SHOWING {MAX_WHEEL}"
+            return entries[:MAX_WHEEL], notice
         logged = read_logged_loadout()
         if logged:
             return _wheel_entries(logged), _file_notice(logged)
-        if self._cache:
+        if self.config.ocr_fallback and self._cache:
             return _wheel_entries(self._cache), self._cache_notice
-        return _standing_entries(), _STANDING_NOTICE
+        if self.config.ocr_fallback:
+            return _standing_entries(), _STANDING_NOTICE
+        return [], 'WAITING FOR LIVE LOADOUT LOG'
+
+    def _watch_live_loadout(self) -> None:
+        if self.overlay.visible and not self.config.manual_override:
+            entries, notice = self._immediate_state()
+            if entries != self.overlay.entries or notice != self.overlay.notice:
+                # Membership changes move wedge boundaries. Require a fresh
+                # pointer movement before confirming a different stratagem.
+                self.overlay.highlight = None
+                self.overlay.set_state(entries, notice, display_bind(self.config.radial_bind))
+                self.overlay.apply_offset(0, 0)
+        self.root.after(250, self._watch_live_loadout)
 
     def _apply_scan(
         self,
@@ -271,6 +315,8 @@ class App:
         image: Image.Image | None = None,
     ) -> None:
         if generation != self._scan_gen:
+            return
+        if self._recognition_blocked():
             return
         if image is not None:
             self.settings.show_capture(image)
@@ -576,7 +622,7 @@ class App:
             )
             return
         self.settings.set_status(
-            "Hold Mouse3 to open the wheel. Mouse5 learns arrow shapes. Mouse4 scans. Escape cancels."
+            "Live log mode: the wheel updates automatically. OCR / shape fallback is optional in Loadout Source. Escape cancels."
         )
 
 

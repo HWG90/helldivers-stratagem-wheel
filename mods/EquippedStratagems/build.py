@@ -92,7 +92,8 @@ def build(output: Path = OUTPUT) -> Path:
     archive = make_archive({resource_hash(RESOURCE): resource})
     description = (
         "Requires Bingus Shared Loader v15 or newer / API 1. "
-        "Writes equipped stratagem catalog names to EquippedStratagems.log. Enable both and deploy."
+        "Revision 3: exports the local player's selected mission stratagem names to EquippedStratagems.log. "
+        "Visit the mission selection screen before deploying."
     )
     manifest = {
         "Version": 1,

@@ -1,0 +1,4 @@
+
+# Keep generated addon text byte-identical to the packaged resource.
+mods/EquippedStratagems/*.lua text eol=lf
+mods/EquippedStratagems/INSTALL.txt text eol=lf

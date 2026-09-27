@@ -329,6 +329,7 @@ def test_three_codes_in_one_capture_all_land_on_the_wheel(tmp_path, monkeypatch)
 
     monkeypatch.setattr("stratagems.app.capture_region", capture)
     app = App(demo=True)
+    app.config.ocr_fallback = True
     try:
         app.config.region = Region(0, 0, image.width, image.height)
         app.config.glyph_lut = lut

@@ -8,3 +8,6 @@ dist/
 build/
 packaging/app.ico
 .mypy_cache/
+
+# Superseded local diagnostic/test packages
+mods/EquippedStratagems/EquippedStratagems-r*.zip

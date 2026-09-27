@@ -48,9 +48,10 @@ def test_opening_the_wheel_does_not_scan_and_the_hotkey_does(tmp_path, monkeypat
     monkeypatch.setattr("stratagems.app.capture_region", app_capture)
     monkeypatch.setattr("stratagems.settings.capture_region", settings_capture)
     app = App(demo=True)
+    app.config.ocr_fallback = True
     try:
         app.root.update()
-        assert not app.root.tk.call("after", "info")
+        assert len(app.root.tk.call("after", "info")) == 1  # Live log watcher; no OCR timer.
         assert captures == {"app": 0, "settings": 0}
         app.config.region = Region(0, 0, 20, 20)
         app._cache = [LoadoutEntry("Reinforce", ("up", "down", "right", "left", "up"), "screen")]
@@ -65,7 +66,7 @@ def test_opening_the_wheel_does_not_scan_and_the_hotkey_does(tmp_path, monkeypat
         assert calls == []
         assert captures == {"app": 0, "settings": 0}
         assert app.overlay.entries[0].name == "Reinforce"
-        assert not app.root.tk.call("after", "info")
+        assert len(app.root.tk.call("after", "info")) == 1  # Live log watcher; no OCR timer.
 
         app._on_mouse("mouse4", True, 0, 0)
         app.root.update()
@@ -105,6 +106,7 @@ def test_an_empty_scan_keeps_the_saved_loadout(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr("stratagems.app.capture_region", blank)
     monkeypatch.setattr("stratagems.settings.capture_region", blank)
     app = App(demo=True)
+    app.config.ocr_fallback = True
     try:
         app.config.region = Region(0, 0, 20, 20)
         app._cache = [LoadoutEntry("Reinforce", ("up", "down", "right", "left", "up"), "screen")]
@@ -146,11 +148,12 @@ def test_preview_updates_on_slider_release_and_auto_without_replacing_the_loadou
     monkeypatch.setattr("stratagems.settings.capture_region", settings_capture)
     monkeypatch.setattr("stratagems.app.capture_region", lambda *_a, **_k: Image.new("RGB", (4, 4)))
     app = App(demo=True)
+    app.config.ocr_fallback = True
     try:
         app.root.update()
         assert paints == []
         assert captures["settings"] == 0
-        assert not app.root.tk.call("after", "info")
+        assert len(app.root.tk.call("after", "info")) == 1  # Live log watcher; no OCR timer.
         app.config.region = Region(0, 0, 20, 20)
         saved = [LoadoutEntry("Reinforce", ("up", "down", "right", "left", "up"), "screen")]
         app._cache = saved
@@ -171,7 +174,7 @@ def test_preview_updates_on_slider_release_and_auto_without_replacing_the_loadou
         assert captures["settings"] == 1
         assert paints == ["paint", "paint"]
         assert app._cache[0].name == "Reinforce"
-        assert not app.root.tk.call("after", "info")
+        assert len(app.root.tk.call("after", "info")) == 1  # Live log watcher; no OCR timer.
     finally:
         app.root.destroy()
 
@@ -197,6 +200,7 @@ def test_reinforce_and_resupply_are_always_on_the_wheel_from_the_catalog(tmp_pat
     monkeypatch.setattr("stratagems.app.scan_image", fake_scan_image)
     monkeypatch.setattr("stratagems.app.capture_region", lambda *_a, **_k: Image.new("RGB", (8, 8)))
     app = App(demo=True)
+    app.config.ocr_fallback = True
     try:
         app.present(0, 0, dry_run=True)
         assert calls == []

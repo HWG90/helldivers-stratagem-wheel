@@ -1,0 +1,20 @@
+Confirmed in the user's installed game, 2026-09-27:
+game.dll PE timestamp: 1790161983
+slot=1 id=3 code=12333 name=Eagle 500kg Bomb
+slot=2 id=136 code=223423 name=Orbital 120mm HE Barrage
+slot=3 id=4 code=23411 name=Orbital Gatling Barrage
+slot=4 id=25 code=343112 name=AC-8 Autocannon
+
+EquippedStratagems.log:
+Eagle 500kg Bomb
+Orbital 120mm HE Barrage
+Orbital Gatling Barrage
+AC-8 Autocannon
+
+After user-confirmed landing:
+status=retained mission selection
+reader=Selection screen is not registered
+count=4
+mission=true
+source=cached selection
+The names-only export remained identical.

@@ -201,3 +201,27 @@ The tests cover sequence timing, fuzzy name matching, learned arrow samples (inc
 ## What this will not do
 
 No injection into the game process, no memory reads, no hooks inside the game, no anti-cheat bypass, and no hidden process. If global mouse and keyboard listening is blocked on your machine, the preview wheel and the dry-run panel still work; live typing will not, and the terminal says so.
+
+
+## Live log mode and current Windows build
+
+Double-click `HelldiversStratagemWheel.exe` and approve the Windows administrator
+prompt. The bundled launcher always requests elevation; Python need not be
+installed separately. Restart the app after replacing the executable.
+
+Live mod logs are the default source. Under **Loadout Source**, enable **OCR /
+shape recognition as a fallback** only if needed. Populated logs suppress Scan,
+Learn and shape previews; valid empty live snapshots clear the wheel. The live
+snapshot takes priority over legacy logs and refreshes an open wheel automatically.
+
+The current addon is `mods/EquippedStratagems/EquippedStratagems.zip` (revision 8).
+It includes selected and mission-granted names, cooldown filtering, optional
+ModOptionsMenu settings, SEAF/Upload Data gates and Eagle Rearm eligibility.
+Rearm requires fewer Eagle uses than the current maximum, including local-player
+capacity upgrades. Install this ZIP in place of older addon builds. Eagle Rearm's
+new gate is locally tested; in-game validation is pending. Hellbomb's contextual
+gate remains outstanding. See the mod folder's README and INSTALL instructions.
+
+The complete addon sources and isolated Lua fixtures are in that mod folder;
+rebuild with `python assemble.py` followed by `python build.py`. Native diagnostic
+captures and development dependencies are not part of this repository.

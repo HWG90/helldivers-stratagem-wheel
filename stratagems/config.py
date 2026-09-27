@@ -41,6 +41,7 @@ class Config:
     tail_ms: int = 40
     tap_ms: int = 20
     manual_override: bool = False
+    ocr_fallback: bool = False
     transparent_wheel: bool = False
     pinned: list[str] = field(default_factory=list)
     region: Region | None = None
@@ -65,6 +66,7 @@ class Config:
             "tail_ms": self.tail_ms,
             "tap_ms": self.tap_ms,
             "manual_override": self.manual_override,
+            "ocr_fallback": self.ocr_fallback,
             "transparent_wheel": self.transparent_wheel,
             "pinned": list(self.pinned),
             "region": None if self.region is None else self.region.to_dict(),
@@ -136,6 +138,7 @@ def _from_dict(data: dict[str, object]) -> Config:
         tail_ms=_ms(data.get("tail_ms"), 40),
         tap_ms=_ms(data.get("tap_ms"), 20),
         manual_override=_bool(data.get("manual_override"), False),
+        ocr_fallback=_bool(data.get("ocr_fallback"), False),
         transparent_wheel=_bool(data.get("transparent_wheel"), False),
         pinned=names,
         region=region,

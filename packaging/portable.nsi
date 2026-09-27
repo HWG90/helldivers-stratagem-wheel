@@ -3,17 +3,17 @@
 Unicode true
 ManifestDPIAware true
 SetCompressor /SOLID lzma
-RequestExecutionLevel user
+RequestExecutionLevel admin
 SilentInstall silent
 ShowInstDetails nevershow
 AutoCloseWindow true
 Name "Helldivers Stratagem Wheel"
 Caption "Helldivers Stratagem Wheel"
-InstallDir "$LOCALAPPDATA\HelldiversStratagemWheel"
 
 !ifndef APP_VERSION
-  !define APP_VERSION "1.0.14"
+  !define APP_VERSION "1.0.15"
 !endif
+InstallDir "$LOCALAPPDATA\HelldiversStratagemWheel\runtime-${APP_VERSION}"
 
 !ifndef PAYLOAD
   !error "Pass -DPAYLOAD=... pointing at the staged runtime"
@@ -45,25 +45,24 @@ FunctionEnd
 Section
   ReadINIStr $1 "$INSTDIR\runtime.ini" Runtime Version
   ${If} $1 != "${APP_VERSION}"
-    RMDir /r "$INSTDIR"
     SetOutPath "$INSTDIR\Python"
-    File /r "${PAYLOAD}/Python/*"
+    File /r "${PAYLOAD}\Python\*"
     SetOutPath "$INSTDIR\pkgs"
-    File /r "${PAYLOAD}/pkgs/*"
+    File /r "${PAYLOAD}\pkgs\*"
     ; Last name fallback. tessdata stays its own directory so Tesseract 5.4
     ; loads eng.traineddata from that folder.
     SetOutPath "$INSTDIR\tesseract"
-    File "${PAYLOAD}/tesseract/tesseract.exe"
-    File "${PAYLOAD}/tesseract/*.dll"
+    File "${PAYLOAD}\tesseract\tesseract.exe"
+    File "${PAYLOAD}\tesseract\*.dll"
     SetOutPath "$INSTDIR\tesseract\tessdata"
-    File "${PAYLOAD}/tesseract/tessdata/eng.traineddata"
-    File /nonfatal "${PAYLOAD}/tesseract/tessdata/eng.user-words"
-    File /nonfatal "${PAYLOAD}/tesseract/tessdata/eng.user-patterns"
+    File "${PAYLOAD}\tesseract\tessdata\eng.traineddata"
+    File /nonfatal "${PAYLOAD}\tesseract\tessdata\eng.user-words"
+    File /nonfatal "${PAYLOAD}\tesseract\tessdata\eng.user-patterns"
     SetOutPath "$INSTDIR"
-    File "${PAYLOAD}/Stratagem_Terminal.launch.pyw"
+    File "${PAYLOAD}\Stratagem_Terminal.launch.pyw"
     WriteINIStr "$INSTDIR\runtime.ini" Runtime Version "${APP_VERSION}"
   ${EndIf}
 
   SetOutPath "$INSTDIR"
-  ExecShell "" "$INSTDIR\Python\pythonw.exe" '"$INSTDIR\Stratagem_Terminal.launch.pyw"' SW_SHOWNORMAL
+  Exec '"$INSTDIR\Python\pythonw.exe" "$INSTDIR\Stratagem_Terminal.launch.pyw"'
 SectionEnd

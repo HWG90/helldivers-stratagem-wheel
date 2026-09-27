@@ -31,6 +31,7 @@ from stratagems.hdr import (
     auto_curve,
 )
 from stratagems.glyphs import arrow_preview
+from stratagems.loadout_log import recognition_block_reason
 from stratagems.ocr import OcrError, capture_region
 from stratagems.sequence import format_plan, plan_input
 from stratagems.theme import BG, BLACK, BODY_CANDIDATES, DIM, MONO_CANDIDATES, PANEL, WHITE, YELLOW, pick_family
@@ -647,6 +648,10 @@ class SettingsWindow:
         self.hdr_ocr.set(text)
 
     def _refresh_preview(self) -> None:
+        reason = recognition_block_reason(self.config.ocr_fallback, self.config.manual_override)
+        if reason:
+            self._show_preview_message(reason)
+            return
         if self.config.region is None:
             self._show_uncalibrated()
             return
@@ -664,7 +669,15 @@ class SettingsWindow:
         self.hdr_ocr.set(summary)
 
     def _build_loadout(self, parent: tk.Misc) -> None:
-        frame = self._section(parent, "MANUAL LOADOUT")
+        frame = self._section(parent, "LOADOUT SOURCE")
+        body_label(frame, "Live log updates are the default. Recognition runs only when enabled below and no log is active.",
+                   self.family, fg=DIM, size=8).pack(anchor="w")
+        self.ocr_fallback_var = tk.BooleanVar(value=self.config.ocr_fallback)
+        tk.Checkbutton(frame, text="Enable OCR / shape recognition as a fallback",
+                       variable=self.ocr_fallback_var, command=self._on_ocr_fallback,
+                       bg=BG, fg=WHITE, selectcolor=YELLOW, activebackground=BG,
+                       activeforeground=YELLOW, font=(self.family, 10), highlightthickness=0,
+                       anchor="w").pack(anchor="w")
         self.manual_var = tk.BooleanVar(value=self.config.manual_override)
         tk.Checkbutton(
             frame,
@@ -719,6 +732,13 @@ class SettingsWindow:
         if self._loading:
             return
         self.config.manual_override = bool(self.manual_var.get())
+        self.hooks.on_changed()
+
+    def _on_ocr_fallback(self) -> None:
+        if self._loading:
+            return
+        self.config.ocr_fallback = bool(self.ocr_fallback_var.get())
+        self._refresh_preview()
         self.hooks.on_changed()
 
     def _rebuild_checks(self) -> None:

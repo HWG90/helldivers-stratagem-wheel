@@ -1,46 +1,63 @@
-EquippedStratagems
+EquippedStratagems - revision 8
 
-Writes the currently equipped stratagems, one catalog name per line, to:
-
+Exports your selected and mission-granted stratagems, one name per line, to:
 %LOCALAPPDATA%\CowboyBingus\Helldivers2\Logs\EquippedStratagems.log
 
-The file is rewritten when that loadout changes, and again when the
-Send Strategems binding fires. Install this zip next to Bingus Shared Loader
-and Mod Bindings Menu. The loader discovers the plaintext entry
-mods/EquippedStratagems/EquippedStratagems. The first update creates
-EquippedStratagems.log. Until catalog names are known, the file holds
-# status lines: loadouts usable list, game.dll base, whether the stratagem
-menu is open, and the raw equipped count (# count=). mods/codex/loadouts is
-a compiled patch and is not called. In a mission (mode 1..7 at
-*(game+0x33266a0)), when the in-game stratagem menu opens, the mod reads
-StratagemInfo at *(game+0x348e8f8) and the stingray array (count, capacity,
-pointer) in *(game+0x3326468) after the countdown at +0x12C. The inline
-kinds at +0x1D0 are empty and are not read. The
-menu is the input action whose shipped keyboard default is Left Ctrl
-(*(game+0x347cf18), defaults at owner+686968, state byte at
-owner+808+32*(97*group+action)). If that action cannot be resolved, the
-fallback is GetAsyncKeyState for Ctrl. Reads use
-tonumber(GetModuleHandleA("game.dll")) and ReadProcessMemory. Names then
-replace the status, one catalog name per line, through
-CowboyBingusModLoader.open_log. It registers Send Strategems with
-ModBindingsMenu.register_binding. It does not patch code or hide itself.
+This build reads the LOCAL player's loadout every 0.5 seconds. On the selection
+screen it exports your chosen slots. In mission it reads the live player payload,
+including Reinforce, SOS Beacon, Resupply and granted equipment/objectives.
+Grants update as they enter or leave that payload. No Ctrl/menu key is required.
+Empty entries and duplicate names are omitted. By default, active cooldown and
+delivery timers remove names until they expire. This does not check every use
+restriction (for example jamming or depleted charges). A prior selection-screen capture
+is not required in mission. A game restart clears old output. A transient read
+failure retains the last valid list and records the reason in diagnostics.
 
-1. Close Helldivers 2. Use one mod manager, Arsenal or HD2MM.
-2. Import Bingus Shared Loader v15 or newer (v18 is the current API 1 release),
-   Mod Bindings Menu v2, and EquippedStratagems.zip.
-3. Enable all three. With Arsenal's default priority, put Bingus Shared Loader
-   last. If first-mod priority is on, put the loader first.
-4. Purge / Deploy, then launch the game normally.
-5. Check %LOCALAPPDATA%\CowboyBingus\Helldivers2\Logs\BingusSharedLoader.log
-   for this line:
+Revision 6 gates SEAF Artillery on the game's artillery controller: ammunition
+must be enabled and remaining, and its artillery unit valid. Merely having the
+SEAF entry in mission data does not export it. Missing/unreadable SEAF state
+omits SEAF only. This gate applies with cooldown filtering ON or OFF.
+Revision 7 also gates Upload Data on the game-maintained local in-range flag
+and objective eligibility flags. Missing/unreadable upload state omits Upload
+Data. Eagle Rearm now requires spent Eagle uses, including upgraded capacity.
+Hellbomb still needs its separate contextual check.
 
-   mods/EquippedStratagems/EquippedStratagems: loaded
+Optional dependency: CowboyBingus ModOptionsMenu v1 API.
+In Escape > MODS > EquippedStratagems, press APPLY after changing:
+  Hide Stratagems on Cooldown (default ON)
+  Include Mission Grants (default ON)
+  Update Frequency (0.25 / 0.5 / 1 second; default 0.5)
+Without ModOptionsMenu, these defaults still work automatically.
+https://github.com/CowboyBingus/ModOptionsMenu
 
-6. On the MODS tab, bind Send Strategems. That key is stored by Mod Bindings
-   Menu, not by a separate settings file.
+The updated wheel reads EquippedStratagems_state.log first. This companion file
+has a complete-snapshot marker and count, so an empty list clears the wheel
+and a concurrent partial read retains its previous list. EquippedStratagems.log
+continues to contain only names for compatibility. Restart the wheel application
+after updating its source. Source changes do not update a separately packaged EXE.
 
-A list that does not match the catalog leaves the previous log in place.
-If the player state is unreadable, the stratagem wheel keeps Learn and Scan.
+1. Close Helldivers 2.
+2. Replace the old EquippedStratagems entry in your mod manager with this ZIP.
+   Keep Bingus Shared Loader enabled. Mod Bindings Menu is optional, for the
+   existing Send Strategems key. Do not deploy two copies of this addon.
+3. Deploy and relaunch. On mission selection, choose a known set of stratagems
+   and leave the screen open for a second. Inspect EquippedStratagems.log.
+4. Deploy into the mission and check that granted stratagems join the list.
+5. Use a stratagem: it should disappear during its timer and return at expiry.
 
+Names use the wheel's catalog spelling. They are resolved from each selected
+StratagemInfo definition's input sequence, not the outdated debug-name table.
+The catalog covers 113 unambiguous codes plus the verified Upload Data definition.
+Unsupported codes clear the export
+and report an error rather than exporting a partial list or a guessed name.
+
+Diagnostics (separate from the names-only output):
+  EquippedStratagems_diagnostics.log - capture status, IDs, codes and names
+
+Reader layout is pinned to game.dll PE timestamp 1790161983. An unsupported
+game build is reported rather than scanned heuristically. Other players' cards,
+payload mismatches and data changing during a read are rejected and retried.
+Failed writes/flushes/closes are retried. Send Strategems forces a rewrite.
+
+Upstream loader installation information:
 https://github.com/CowboyBingus/BingusSharedLoader/releases/latest
-https://github.com/CowboyBingus/ModBindingsMenu/releases/latest
