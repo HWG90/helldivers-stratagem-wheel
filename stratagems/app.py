@@ -21,6 +21,7 @@ from stratagems.catalog import MAX_WHEEL, LoadoutEntry, get
 from stratagems.config import Config, load_config, save_config
 from stratagems.cursor_pos import get_cursor, hide_cursor, set_cursor, show_cursor
 from stratagems.listen import InputListener
+from stratagems.game_focus import helldivers_focused
 from stratagems.glyphs import cluster_glyphs
 from stratagems.hdr import HdrCurve, curve_from_config
 from stratagems.learn import LearnWindow
@@ -57,6 +58,7 @@ class App:
         self._send_lock = threading.Lock()
         self._keyboard: KeyboardSender | None = None
         self.listener: InputListener | None = None
+        self._game_focused = helldivers_focused
 
         self.root = tk.Tk()
         self.root.title("Stratagem Terminal")
@@ -379,12 +381,22 @@ class App:
             entries, notice = self._immediate_state()
             self.overlay.set_state(entries, notice, display_bind(self.config.radial_bind))
 
+    def _game_is_focused(self) -> bool:
+        try:
+            return bool(self._game_focused())
+        except OSError:
+            return False
+
     def _press_radial(self, x: int, y: int) -> None:
         if self._capture_cb is not None:
             if self._lock.active:
                 self._lock.release()
             return
         if self._radial_down:
+            return
+        if not self._game_is_focused():
+            if self._lock.active:
+                self._lock.release()
             return
         if not self._lock.active:
             return
@@ -397,9 +409,21 @@ class App:
         self.present(left, top, dry_run=self.demo)
         dx, dy = self._lock.offset
         self.overlay.apply_offset(dx, dy)
+        self.root.after(100, self._watch_game_focus)
+
+    def _watch_game_focus(self) -> None:
+        if not self._radial_down:
+            return
+        if not self._game_is_focused():
+            self._cancel_wheel()
+            return
+        self.root.after(100, self._watch_game_focus)
 
     def _release_radial(self) -> None:
         if not self._radial_down:
+            return
+        if not self._game_is_focused():
+            self._cancel_wheel()
             return
         self._radial_down = False
         if self._lock.active:
@@ -496,11 +520,16 @@ class App:
     def _from_move(self, x: int, y: int) -> None:
         if not self._lock.active:
             return
+        if not self._game_is_focused():
+            self._later(self._cancel_wheel)
+            return
         dx, dy = self._lock.observe(x, y)
         self._later(lambda dx=dx, dy=dy: self._apply_hold_offset(dx, dy))
 
     def _arm_hold(self, fallback: tuple[int, int]) -> None:
         if self._capture_cb is not None or self._lock.active or self._radial_down:
+            return
+        if not self._game_is_focused():
             return
         self._held_offset = (0, 0)
         self._lock.engage(fallback)
