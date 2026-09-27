@@ -91,12 +91,19 @@ def configure_bundled_runtime(roots: list[Path] | None = None) -> None:
 
 
 def tesseract_config() -> str:
-    """Tesseract CLI flags, including a bundled tessdata directory."""
+    """Tesseract CLI flags.
+
+    The language data directory is ``TESSDATA_PREFIX``. pytesseract splits
+    this string with ``shlex`` in non-POSIX mode on Windows, and that mode
+    keeps quote characters, so a quoted ``--tessdata-dir`` path is opened
+    literally and misses ``eng.traineddata``. Paths with spaces stay on the
+    environment variable for the same reason.
+    """
     base = "--psm 6 -l eng"
     tessdata = os.environ.get("HELLDIVERS_TESSDATA")
-    if not tessdata:
+    if not tessdata or any(char.isspace() or char == '"' for char in tessdata):
         return base
-    return f'{base} --tessdata-dir "{tessdata}"'
+    return f"{base} --tessdata-dir {tessdata}"
 
 
 def _tessdata_beside(exe: Path) -> Path | None:
@@ -122,7 +129,9 @@ def _configure_tesseract(roots: list[Path]) -> None:
     if located is None:
         return
     exe, tessdata = located
-    # Tesseract 5 treats TESSDATA_PREFIX as the parent of the tessdata folder.
-    os.environ["TESSDATA_PREFIX"] = str(tessdata.parent)
+    # UB Mannheim Tesseract 5.4 uses TESSDATA_PREFIX as the tessdata directory
+    # (the folder that contains eng.traineddata). The parent of that folder
+    # makes it look for eng.traineddata beside tesseract.exe.
+    os.environ["TESSDATA_PREFIX"] = str(tessdata)
     os.environ["HELLDIVERS_TESSDATA"] = str(tessdata)
     pytesseract.pytesseract.tesseract_cmd = str(exe)

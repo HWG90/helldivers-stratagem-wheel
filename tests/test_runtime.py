@@ -55,5 +55,26 @@ def test_configure_points_at_bundled_tesseract(tmp_path: Path, monkeypatch) -> N
 
     assert pytesseract.pytesseract.tesseract_cmd == str(exe)
     assert Path(os.environ["HELLDIVERS_TESSDATA"]) == folder
-    assert "--tessdata-dir" in tesseract_config()
-    assert str(folder) in tesseract_config()
+    assert Path(os.environ["TESSDATA_PREFIX"]) == folder
+    config = tesseract_config()
+    assert "--tessdata-dir" in config
+    assert str(folder) in config
+    assert f'"{folder}"' not in config
+
+
+def test_spaced_tessdata_path_stays_on_the_environment(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "User Name"
+    folder = root / "tesseract" / "tessdata"
+    folder.mkdir(parents=True)
+    exe = root / "tesseract" / "tesseract.exe"
+    exe.write_bytes(b"MZ")
+    (folder / "eng.traineddata").write_bytes(b"trained")
+    monkeypatch.setattr(runtime, "_CONFIGURED", False)
+    monkeypatch.setattr(pytesseract.pytesseract, "tesseract_cmd", "tesseract")
+    monkeypatch.delenv("HELLDIVERS_TESSDATA", raising=False)
+    monkeypatch.delenv("TESSDATA_PREFIX", raising=False)
+
+    runtime.configure_bundled_runtime([root])
+
+    assert os.environ["TESSDATA_PREFIX"] == str(folder)
+    assert "--tessdata-dir" not in tesseract_config()

@@ -16,7 +16,7 @@ PAYLOAD="$ROOT/build/windows/payload"
 OUT="$ROOT/build/windows/HelldiversStratagemWheel.exe"
 MEDIA="/cursor/stores/bc-e8591809-38be-4c71-a896-fedcb60eabc2/media/HelldiversStratagemWheel.exe"
 PY_VERSION="3.12.10"
-APP_VERSION="1.0.0"
+APP_VERSION="1.0.1"
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -130,22 +130,30 @@ fi
 TESS_RAW="$CACHE/tesseract-extract"
 rm -rf "$TESS_RAW"
 mkdir -p "$TESS_RAW"
+# Match either slash. 7z lists NSIS paths with backslashes, and a
+# forward-slash include filter can skip tessdata/eng.traineddata.
 7z x -y -o"$TESS_RAW" "$TESS_EXE" \
   tesseract.exe \
   '*.dll' \
-  'tessdata/eng.traineddata' \
-  'tessdata/eng.user-words' \
-  'tessdata/eng.user-patterns' \
+  '*eng.traineddata' \
+  '*eng.user-words' \
+  '*eng.user-patterns' \
   >/dev/null
 
 rm -rf "$PAYLOAD/tesseract"
 mkdir -p "$PAYLOAD/tesseract/tessdata"
 cp -a "$TESS_RAW/tesseract.exe" "$PAYLOAD/tesseract/tesseract.exe"
 cp -a "$TESS_RAW"/*.dll "$PAYLOAD/tesseract/"
-cp -a "$TESS_RAW/tessdata/eng.traineddata" "$PAYLOAD/tesseract/tessdata/eng.traineddata"
-if [[ -f "$TESS_RAW/tessdata/eng.user-words" ]]; then
-  cp -a "$TESS_RAW/tessdata/eng.user-words" "$TESS_RAW/tessdata/eng.user-patterns" \
-    "$PAYLOAD/tesseract/tessdata/"
+trained="$(find "$TESS_RAW" -type f -name 'eng.traineddata' -print -quit)"
+if [[ -z "$trained" ]]; then
+  echo "UB Mannheim installer did not contain eng.traineddata" >&2
+  exit 1
+fi
+cp -a "$trained" "$PAYLOAD/tesseract/tessdata/eng.traineddata"
+words="$(find "$TESS_RAW" -type f -name 'eng.user-words' -print -quit || true)"
+patterns="$(find "$TESS_RAW" -type f -name 'eng.user-patterns' -print -quit || true)"
+if [[ -n "$words" && -n "$patterns" ]]; then
+  cp -a "$words" "$patterns" "$PAYLOAD/tesseract/tessdata/"
 fi
 # Tesseract's own DLLs load the VC runtime from their directory.
 for runtime_dll in vcruntime140.dll vcruntime140_1.dll; do
@@ -156,6 +164,14 @@ done
 
 test -f "$PAYLOAD/tesseract/tesseract.exe"
 test -f "$PAYLOAD/tesseract/tessdata/eng.traineddata"
+# A real UB Mannheim eng.traineddata is a few megabytes. A failed 7z
+# extract can leave a tiny stub that still passes test -f.
+trained_bytes="$(wc -c < "$PAYLOAD/tesseract/tessdata/eng.traineddata")"
+if [[ "$trained_bytes" -lt 1000000 ]]; then
+  echo "eng.traineddata is only ${trained_bytes} bytes." >&2
+  exit 1
+fi
+echo "staged payload tesseract/tessdata/eng.traineddata (${trained_bytes} bytes)"
 test -f "$PYDIR/pythonw.exe"
 test -f "$PYDIR/Lib/tkinter/__init__.py"
 test -f "$PYDIR/tcl/tcl8.6/init.tcl"
@@ -258,6 +274,10 @@ makensis -NOCD \
   -DAPP_VERSION="$APP_VERSION" \
   "$ROOT/packaging/portable.nsi"
 
+if ! 7z l "$OUT" | grep -F 'tesseract/tessdata/eng.traineddata'; then
+  echo "Installer is missing tesseract/tessdata/eng.traineddata" >&2
+  exit 1
+fi
 file "$OUT"
 mkdir -p "$(dirname "$MEDIA")"
 cp -f "$OUT" "$MEDIA"
