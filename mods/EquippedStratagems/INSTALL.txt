@@ -10,10 +10,12 @@ and Mod Bindings Menu. The loader discovers the plaintext entry
 mods/EquippedStratagems/EquippedStratagems. The first update creates
 EquippedStratagems.log. Until catalog names are known, the file holds
 # status lines: loadouts usable list, game.dll base, whether the stratagem
-menu is open, and the equipped slot count. mods/codex/loadouts is a compiled
-patch and is not called. In a mission (mode 1..7 at *(game+0x33266a0)), when
-the in-game stratagem menu opens, the mod reads StratagemInfo at
-*(game+0x348e8f8) and the packed kind ids at *(game+0x3326468)+0x1D0. The
+menu is open, and the raw equipped count (# count=). mods/codex/loadouts is
+a compiled patch and is not called. In a mission (mode 1..7 at
+*(game+0x33266a0)), when the in-game stratagem menu opens, the mod reads
+StratagemInfo at *(game+0x348e8f8) and the stingray array (count, capacity,
+pointer) in *(game+0x3326468) after the countdown at +0x12C. The inline
+kinds at +0x1D0 are empty and are not read. The
 menu is the input action whose shipped keyboard default is Left Ctrl
 (*(game+0x347cf18), defaults at owner+686968, state byte at
 owner+808+32*(97*group+action)). If that action cannot be resolved, the

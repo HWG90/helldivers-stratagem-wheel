@@ -24,11 +24,15 @@
 -- fallback, the same call GalacticMenuHotkey uses.
 --
 -- Names are the equipped slots the menu shows, read only in mission mode
--- 1..7 (*(game+0x33266a0), ShallowWaterDiving / spawn_data). They are the
--- packed StratagemInfo kind ids at local player+0x1D0 (stride 4), on the
--- player block *(game+0x3326468) that those mods already read. The thrown
--- ball list at automatic_anchor_manager is not this loadout. StratagemInfo
--- names are *(game+0x348e8f8), table game+0x37cb600 (navigation_patch).
+-- 1..7 (*(game+0x33266a0), ShallowWaterDiving / spawn_data). They live on
+-- the player block *(game+0x3326468) that those mods already read, in the
+-- span after the countdown at +0x12C and before state at +0x2E0 (and the
+-- tail after the use bit at +0x3B4). Each slot list there is a stingray
+-- array: u32 count, u32 capacity, then a pointer to packed StratagemInfo
+-- kind ids or to StratagemInfo records from game+0x37cb600. The old inline
+-- kinds at player+0x1D0 are empty on this build and are not the list. The
+-- thrown ball list is not this loadout either. StratagemInfo names are
+-- *(game+0x348e8f8), table game+0x37cb600 (navigation_patch).
 -- game.dll is tonumber(GetModuleHandleA('game.dll')); each read is
 -- ReadProcessMemory of a const void*.
 
@@ -49,8 +53,12 @@ local INPUT_OWNER_RVA = 0x347cf18
 local SETTINGS_SIZE = 80280
 local RECORD_SIZE = 400
 local MAX_EQUIPPED = 16
-local SLOT_OFFSET = 0x1D0
-local SLOT_STRIDE = 4
+-- Inline kinds at this offset are empty on the current build. Arrays that
+-- start here are not the equipped list.
+local EMPTY_SLOT_OFFSET = 0x1D0
+local ARRAY_SPANS = {{0x130, 0x2E0}, {0x3B8, 0x440}}
+local MIN_LOADOUT = 2
+local MAX_CAPACITY = 32
 local DEFAULTS_MAP = 686968
 local ACTION_STATE_OFFSET = 808
 local ACTION_STATE_STRIDE = 32
@@ -445,7 +453,7 @@ local function stratagem_names(api, game)
     if type(source) ~= 'string' or #source ~= SETTINGS_SIZE or u32(source, 0) ~= 11 then return nil end
     local table_bytes = api.read(game + TABLE_RVA, 150 * 8)
     if type(table_bytes) ~= 'string' or #table_bytes ~= 150 * 8 then return nil end
-    local offset, names, seen, records = 4, {}, {}, 0
+    local offset, names, seen, records, by_address = 4, {}, {}, 0, {}
     for _ = 1, 11 do
         if u32(source, offset) ~= 0x444C444C or u32(source, offset + 4) ~= 1
             or u32(source, offset + 8) ~= 0x30EB6399
@@ -467,6 +475,7 @@ local function stratagem_names(api, game)
             local pointed = api.pointer(table_bytes, kind * 8)
             if pointed ~= address_add(buffer, record) then return nil end
             seen[kind], records = true, records + 1
+            by_address[address_add(buffer, record)] = kind
             local record_bytes = source:sub(record + 1, record + RECORD_SIZE)
             local name = best_catalog_name(record_bytes:sub(5))
             if not name then
@@ -487,7 +496,7 @@ local function stratagem_names(api, game)
         offset = finish
     end
     if offset ~= #source or records ~= 149 then return nil end
-    return names
+    return names, by_address
 end
 
 -- Mission type 1..7, same gate as ShallowWaterDiving and spawn_data.
@@ -501,26 +510,114 @@ local function mission_type(api, game)
     return u32(bytes, 0x40)
 end
 
--- Packed StratagemInfo kinds the open menu lists. A 0 or 0xFFFFFFFF ends
--- the list. A value that is not a catalog kind rejects the whole vector.
-local function names_from_slots(player, by_kind)
+local function dedupe_names(raw)
     local names, seen = {}, {}
-    for index = 0, MAX_EQUIPPED - 1 do
-        local kind = u32(player, SLOT_OFFSET + index * SLOT_STRIDE)
-        if not kind or kind == 0 or kind == 0xFFFFFFFF then
-            if #names == 0 then return nil, 0 end
-            return names, #names
-        end
-        if kind < 1 or kind > 149 then return nil, nil end
-        local name = by_kind[kind]
-        if not name then return nil, nil end
-        if not seen[name] then
+    for index = 1, #raw do
+        local name = raw[index]
+        if name and not seen[name] then
             seen[name] = true
             names[#names + 1] = name
         end
     end
-    if #names == 0 then return nil, nil end
-    return names, #names
+    if #names == 0 then return nil end
+    return names
+end
+
+local function names_from_kinds(packed, count, by_kind)
+    local raw = {}
+    for index = 0, count - 1 do
+        local kind = u32(packed, index * 4)
+        local name = kind and by_kind[kind]
+        if not name then return nil end
+        raw[#raw + 1] = name
+    end
+    return dedupe_names(raw)
+end
+
+local function names_from_records(packed, count, by_address, by_kind, reader)
+    local raw = {}
+    for index = 0, count - 1 do
+        local address = reader.pointer(packed, index * 8)
+        local kind = address and by_address[address]
+        local name = kind and by_kind[kind]
+        if not name then return nil end
+        raw[#raw + 1] = name
+    end
+    return dedupe_names(raw)
+end
+
+local function prefer(best, priority, names, count)
+    if not names or not count or count < MIN_LOADOUT then return best end
+    if not best or priority > best.priority or (priority == best.priority and count > best.count) then
+        return {priority = priority, names = names, count = count}
+    end
+    return best
+end
+
+-- Stingray array inside the player block: count, capacity, data pointer.
+-- Record pointers win over packed kind ids. The empty inline field at
+-- EMPTY_SLOT_OFFSET is never the start of this array.
+local function arrays_in_span(reader, bytes, start_at, finish, by_kind, by_address, best)
+    local offset = start_at
+    while offset + 16 <= finish do
+        if offset ~= EMPTY_SLOT_OFFSET then
+            local count = u32(bytes, offset)
+            local capacity = u32(bytes, offset + 4)
+            local data = reader.pointer(bytes, offset + 8)
+            if count and capacity and data and count >= MIN_LOADOUT and count <= MAX_EQUIPPED
+                and capacity >= count and capacity <= MAX_CAPACITY then
+                local pointers = reader.read(data, count * 8)
+                if type(pointers) == 'string' and #pointers == count * 8 then
+                    best = prefer(best, 3, names_from_records(pointers, count, by_address, by_kind, reader), count)
+                end
+                local packed = reader.read(data, count * 4)
+                if type(packed) == 'string' and #packed == count * 4 then
+                    best = prefer(best, 2, names_from_kinds(packed, count, by_kind), count)
+                end
+            end
+        end
+        offset = offset + 8
+    end
+    return best
+end
+
+-- Inline catalog kinds, terminated by 0 or 0xFFFFFFFF. The empty field is a
+-- hard gap so a zero there cannot end the list before the real slots.
+local function inline_in_span(bytes, start_at, finish, by_kind, best)
+    local offset = start_at
+    while offset + 12 <= finish do
+        if offset == EMPTY_SLOT_OFFSET then
+            offset = offset + 4
+        else
+            local raw, at = {}, offset
+            while at + 4 <= finish and at ~= EMPTY_SLOT_OFFSET do
+                local kind = u32(bytes, at)
+                if not kind or kind == 0 or kind == 0xFFFFFFFF then break end
+                local name = by_kind[kind]
+                if not name then break end
+                raw[#raw + 1] = name
+                at = at + 4
+            end
+            local ended = at ~= offset and (at == EMPTY_SLOT_OFFSET or at + 4 > finish
+                or u32(bytes, at) == 0 or u32(bytes, at) == 0xFFFFFFFF)
+            if ended and #raw >= 3 then
+                best = prefer(best, 1, dedupe_names(raw), #raw)
+            end
+            if at > offset then offset = at else offset = offset + 4 end
+        end
+    end
+    return best
+end
+
+local function equipped_slots(reader, player, by_kind, by_address)
+    local best = nil
+    for index = 1, #ARRAY_SPANS do
+        local span = ARRAY_SPANS[index]
+        best = arrays_in_span(reader, player, span[1], span[2], by_kind, by_address, best)
+        best = inline_in_span(player, span[1], span[2], by_kind, best)
+    end
+    if not best then return nil, nil end
+    return best.names, best.count
 end
 
 local function ctrl_button_ids()
@@ -614,7 +711,7 @@ local function stratagem_menu_open(reader, game)
 end
 
 local function probe_equipped()
-    local probe = {loadouts = loadouts_usable(), game = false, menu = false, slots = nil, names = nil}
+    local probe = {loadouts = loadouts_usable(), game = false, menu = false, count = nil, names = nil}
     pcall(function()
         local reader = windows_reader()
         if type(reader) ~= 'table' or type(reader.module) ~= 'function' then return end
@@ -627,11 +724,14 @@ local function probe_equipped()
         if not usable_address(player) then return end
         local bytes = reader.read(player, 0x440)
         if type(bytes) ~= 'string' or #bytes ~= 0x440 then return end
-        local by_kind = stratagem_names(reader, game) or {}
-        local names, count = names_from_slots(bytes, by_kind)
-        probe.slots = count
-        -- Ship menu slots are not the mission loadout.
+        local by_kind, by_address = stratagem_names(reader, game)
+        local names, count = equipped_slots(reader, bytes, by_kind or {}, by_address or {})
+        probe.count = count
+        -- Ship menu slots are not the mission loadout. A count of zero is
+        -- not a loadout either: empty +0x1D0 must not be the only line once
+        -- this menu is open in a mission.
         if not mission or mission < 1 or mission > 7 then return end
+        if not names or not count or count < MIN_LOADOUT then return end
         probe.names = names
     end)
     return probe
@@ -652,26 +752,30 @@ local function write_body(body)
     if wrote then last_body = body end
 end
 
-local function write_names(names)
+local function write_names(names, count)
     have_names = true
-    write_body(table.concat(names, '\n'))
+    local body = table.concat(names, '\n')
+    if count and count >= MIN_LOADOUT then
+        body = body .. '\n# count=' .. tostring(count)
+    end
+    write_body(body)
 end
 
 local function write_status(probe)
     if have_names then return end
-    local slots = probe.slots == nil and 'unread' or tostring(probe.slots)
+    local count = probe.count == nil and 'unread' or tostring(probe.count)
     write_body('# loadouts=' .. (probe.loadouts and 'yes' or 'no')
         .. '\n# game.dll=' .. (probe.game and 'yes' or 'no')
         .. '\n# menu=' .. (probe.menu and 'open' or 'closed')
-        .. '\n# slots=' .. slots)
+        .. '\n# count=' .. count)
 end
 
 local function flush_loadout(allow_names)
     local probe = probe_equipped()
     local names = allow_names and probe.names and canonical(probe.names) or nil
-    if names and #names > 0 then
+    if names and #names > 0 and probe.count and probe.count >= MIN_LOADOUT then
         api.names = names
-        write_names(names)
+        write_names(names, probe.count)
     else
         write_status(probe)
     end

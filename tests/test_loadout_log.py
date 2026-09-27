@@ -308,18 +308,25 @@ local thrown_row = overlay(string.rep('\0', 64), 12, u32s(5))
 put_region(GAME + 0x33266b0, u64s(SM))
 put_region(SM, thrown)
 put_region(ROWS, thrown_row)
+local SLOT_DATA = 0x36000000
 local function use_slots(kinds, mission_type, menu, action)
     local mode = string.rep('\0', 0x44)
     if mission_type > 0 then
         mode = overlay(mode, 8, u32s(1))
         mode = overlay(mode, 0x40, u32s(mission_type))
     end
-    local slots = string.rep('\0', 0x440)
-    local at = 0x1D0
-    for _, kind in ipairs(kinds) do
-        slots = overlay(slots, at, u32s(kind))
-        at = at + 4
+    -- +0x1D0 stays a lone decoy. The populated list is the stingray array
+    -- at +0x160 (count, capacity, pointer), which is what the menu shows.
+    local slots = overlay(string.rep('\0', 0x440), 0x1D0, u32s(5))
+    local packed = {}
+    for _, kind in ipairs(kinds) do packed[#packed + 1] = u32s(kind) end
+    local count = #kinds
+    if count < 2 then
+        packed = {u32s(kinds[1] or 0), u32s(3)}
+        count = 2
     end
+    slots = overlay(slots, 0x160, u32s(count) .. u32s(4) .. u64s(SLOT_DATA))
+    put_region(SLOT_DATA, table.concat(packed))
     put_region(GAME + 0x33266a0, u64s(MODE))
     put_region(MODE, mode)
     put_region(PM, slots)
@@ -348,7 +355,7 @@ end
 update(0, 'marker')
 assert(forwarded == 'marker')
 assert(calls == 1)
-assert(bodies[#bodies] == '# loadouts=no\n# game.dll=no\n# menu=closed\n# slots=unread\n')
+assert(bodies[#bodies] == '# loadouts=no\n# game.dll=no\n# menu=closed\n# count=unread\n')
 _G.EquippedStratagemsReader = {
     module = function() return nil end,
     read = function() return nil end,
@@ -358,27 +365,29 @@ update(0.5, 'unreadable')
 assert(calls == 1)
 use_slots({1, 2}, 0, 'key', false)
 update(0.5, 'ship-menu')
-assert(bodies[#bodies] == '# loadouts=no\n# game.dll=yes\n# menu=open\n# slots=2\n')
+assert(bodies[#bodies] == '# loadouts=no\n# game.dll=yes\n# menu=open\n# count=2\n')
 assert(not bodies[#bodies]:find('Eagle', 1, true))
 use_slots({3}, 1, 'key', false)
 update(0.5, 'unknown-slot')
-assert(bodies[#bodies] == '# loadouts=no\n# game.dll=yes\n# menu=open\n# slots=unread\n')
+assert(bodies[#bodies] == '# loadouts=no\n# game.dll=yes\n# menu=open\n# count=unread\n')
 use_slots({1, 2}, 1, 'key', false)
 update(0.5, 'menu-open')
-assert(bodies[#bodies] == 'Eagle 500kg Bomb\nAC-8 Autocannon\n')
+assert(bodies[#bodies] == 'Eagle 500kg Bomb\nAC-8 Autocannon\n# count=2\n')
+assert(not bodies[#bodies]:find('Resupply', 1, true))
+assert(bodies[#bodies] ~= '# count=0\n')
 local after_first = calls
 key_down = false
 update(0.5, 'menu-closed')
 assert(calls == after_first)
-assert(bodies[#bodies] == 'Eagle 500kg Bomb\nAC-8 Autocannon\n')
+assert(bodies[#bodies] == 'Eagle 500kg Bomb\nAC-8 Autocannon\n# count=2\n')
 use_slots({3}, 1, 'key', false)
 update(0.5, 'keep')
 assert(calls == after_first)
-assert(bodies[#bodies] == 'Eagle 500kg Bomb\nAC-8 Autocannon\n')
+assert(bodies[#bodies] == 'Eagle 500kg Bomb\nAC-8 Autocannon\n# count=2\n')
 package.loaded['mods/codex/loadouts'] = {current = {'Orbital Gatling Barrage'}}
 update(0.5, 'loadouts-ignored')
 assert(calls == after_first)
-assert(bodies[#bodies] == 'Eagle 500kg Bomb\nAC-8 Autocannon\n')
+assert(bodies[#bodies] == 'Eagle 500kg Bomb\nAC-8 Autocannon\n# count=2\n')
 assert(EquippedStratagems.publish({'W.A.S.P. Launcher', '500 kg'}))
 assert(bodies[#bodies] == 'StA-X3 W.A.S.P. Launcher\nEagle 500kg Bomb\n')
 assert(not EquippedStratagems.publish({'nope'}))
@@ -408,7 +417,7 @@ down = true
 local before_binding = calls
 update(0.1, 'bind-fire')
 assert(calls > before_binding)
-assert(bodies[#bodies] == 'Resupply\nEagle 500kg Bomb\n')
+assert(bodies[#bodies] == 'Resupply\nEagle 500kg Bomb\n# count=2\n')
 down = false
 key_down = false
 update(0.1, 'bind-up')
@@ -418,7 +427,7 @@ use_slots({1, 2}, 1, 'action', true)
 local before_action = calls
 update(0.1, 'action-down')
 assert(calls > before_action)
-assert(bodies[#bodies] == 'Eagle 500kg Bomb\nAC-8 Autocannon\n')
+assert(bodies[#bodies] == 'Eagle 500kg Bomb\nAC-8 Autocannon\n# count=2\n')
 local chained = update
 dofile('mods/EquippedStratagems/EquippedStratagems.lua')
 assert(update == chained)
