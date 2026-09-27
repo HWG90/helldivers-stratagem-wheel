@@ -1,0 +1,31 @@
+EquippedStratagems
+
+Writes the currently equipped stratagems, one catalog name per line, to:
+
+%LOCALAPPDATA%\CowboyBingus\Helldivers2\Logs\EquippedStratagems.log
+
+The file is rewritten when that loadout changes. Install this zip next to
+Bingus Shared Loader. The loader discovers the plaintext entry
+mods/EquippedStratagems/EquippedStratagems, and the mod uses
+CowboyBingusModLoader.open_log plus the shared update callback. It does not
+scan memory or hide itself.
+
+1. Close Helldivers 2. Use one mod manager, Arsenal or HD2MM.
+2. Import Bingus Shared Loader v15 or newer (v18 is the current API 1 release)
+   and EquippedStratagems.zip.
+3. Enable both. With Arsenal's default priority, put Bingus Shared Loader last.
+   If first-mod priority is on, put the loader first.
+4. Purge / Deploy, then launch the game normally.
+5. Check %LOCALAPPDATA%\CowboyBingus\Helldivers2\Logs\BingusSharedLoader.log
+   for this line:
+
+   mods/EquippedStratagems/EquippedStratagems: loaded
+
+A name reaches the log only when Lua already has the loadout: a string array
+on a stratagem or loadout module, a stingray.Application user setting, the
+StratagemLoadout or PlayerLoadout global, or EquippedStratagems.publish.
+Names are written as catalog names. A list that does not match the catalog
+leaves the previous log in place. If the game has not published a list, the
+log stays absent and the stratagem wheel keeps Learn and Scan.
+
+https://github.com/CowboyBingus/BingusSharedLoader/releases/latest

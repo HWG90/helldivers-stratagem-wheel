@@ -1,4 +1,4 @@
-"""Package the equipped-stratagem addon the way Bingus Shared Loader expects.
+"""Package EquippedStratagems the way Bingus Shared Loader expects.
 
 The archive layout matches the loader's public addon contract: a plaintext
 HD2-Addon entry, seed-zero MurmurHash64A resource name, and a manager ZIP
@@ -8,6 +8,7 @@ whose root is manifest.json plus an Addon patch triple.
 from __future__ import annotations
 
 import json
+import re
 import struct
 import uuid
 import zipfile
@@ -15,12 +16,13 @@ from pathlib import Path
 
 ARCHIVE = "9ba626afa44a3aa3.patch_0"
 TYPE = 0xA14E8DFA2CD117E2
-RESOURCE = "mods/stratagemwheel/equipped_loadout"
+RESOURCE = "mods/EquippedStratagems/EquippedStratagems"
 GUID = "7f3a9c2e-6b14-4d58-8e21-0c5b9a4d71f6"
-DISPLAY_NAME = "Equipped Stratagems"
+DISPLAY_NAME = "EquippedStratagems"
 ROOT = Path(__file__).resolve().parent
-ENTRY = ROOT / "equipped_loadout.lua"
-OUTPUT = ROOT / "Equipped-Stratagems.zip"
+ENTRY = ROOT / "EquippedStratagems.lua"
+INSTALL = ROOT / "INSTALL.txt"
+OUTPUT = ROOT / "EquippedStratagems.zip"
 
 
 def resource_hash(name: str) -> int:
@@ -71,7 +73,11 @@ def make_archive(resources: dict[int, bytes]) -> bytes:
 
 
 def entry_source(source: bytes) -> bytes:
+    if not re.fullmatch(r"mods/[A-Za-z0-9_]+/[A-Za-z0-9_]+(?:/[A-Za-z0-9_]+)*", RESOURCE):
+        raise ValueError("Use mods/<author>/<entry> with letters, digits and underscores")
     marker = f"-- HD2-Addon: {RESOURCE}\n".encode("utf-8")
+    if len(marker) > 256:
+        raise ValueError("Entry declaration must fit within 256 bytes including newline")
     if source.startswith(b"\xef\xbb\xbf") or b"\0" in source:
         raise ValueError("Entry must be plaintext UTF-8 without a BOM")
     source.decode("utf-8")
@@ -86,7 +92,7 @@ def build(output: Path = OUTPUT) -> Path:
     archive = make_archive({resource_hash(RESOURCE): resource})
     description = (
         "Requires Bingus Shared Loader v15 or newer / API 1. "
-        "Writes equipped stratagem names to EquippedStratagems.log. Enable both and deploy."
+        "Writes equipped stratagem catalog names to EquippedStratagems.log. Enable both and deploy."
     )
     manifest = {
         "Version": 1,
@@ -97,6 +103,7 @@ def build(output: Path = OUTPUT) -> Path:
     }
     files = {
         "manifest.json": (json.dumps(manifest, indent=2) + "\n").encode(),
+        "INSTALL.txt": INSTALL.read_bytes(),
         "Addon/" + ARCHIVE: archive,
         "Addon/" + ARCHIVE + ".stream": b"",
         "Addon/" + ARCHIVE + ".gpu_resources": b"",
