@@ -118,6 +118,33 @@ The DRY RUN section prints the exact timestamps and keys for any stratagem in th
 
 The wheel always shows **Reinforce** and **Resupply** from the catalog. You can call those in before any scan or Learn. A scan adds the other stratagems it reads. If that list also contains Reinforce or Resupply, each name appears once.
 
+## Equipped loadout file
+
+The wheel can take the mission loadout from a text file instead of a screen scan. The file is one stratagem name per line. Reinforce and Resupply stay on the wheel, and a name that is already there is not listed twice. A missing or empty file leaves Learn and Scan working. Manual override still uses the pinned list.
+
+Bingus Shared Loader and Mod Bindings Menu do not write `StratagemSlots.log`. The wheel still reads that file when it already lists catalog names. Otherwise it reads the sibling log this addon writes:
+
+`%LOCALAPPDATA%\CowboyBingus\Helldivers2\Logs\EquippedStratagems.log`
+
+The addon is a normal disclosed Helldivers 2 mod. It does not scan process memory, patch code, or hide itself. It uses Bingus Shared Loader's addon discovery, `CowboyBingusModLoader.open_log`, and the same `update` callback chain Mod Bindings Menu documents. Each poll looks for an equipped-name list the game has already published to Lua (a string array on a loadout or stratagem module, a `stingray.Application` user setting, or `StratagemWheelLoadout.publish`). When that list changes, the log is rewritten. The stratagem wheel program itself still does not attach to the game.
+
+Install with Arsenal or HD2MM:
+
+1. Close Helldivers 2. Use one mod manager.
+2. Import [Bingus Shared Loader v15 or newer](https://github.com/CowboyBingus/BingusSharedLoader/releases/latest) (v18 is the current API 1 release) and `mod/Equipped-Stratagems.zip` from this project.
+3. Enable both. With Arsenal's default priority, put **Bingus Shared Loader last**. If first-mod priority is on, put the loader first. Mod Bindings Menu is not required for this addon.
+4. Purge / Deploy, then launch the game normally.
+5. Check `%LOCALAPPDATA%\CowboyBingus\Helldivers2\Logs\BingusSharedLoader.log` for `mods/stratagemwheel/equipped_loadout: loaded`.
+6. Open the stratagem wheel. Names in the log fill it. If neither log has catalog names, use Learn and Scan as below.
+
+Rebuild the zip after editing the Lua entry:
+
+```bash
+python mod/build_addon.py
+```
+
+The package GUID stays `7f3a9c2e-6b14-4d58-8e21-0c5b9a4d71f6`. The resource name is `mods/stratagemwheel/equipped_loadout`.
+
 To read the list from the game:
 
 1. Open the stratagem menu in Helldivers 2 so the arrow codes are on screen.

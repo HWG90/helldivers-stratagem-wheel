@@ -24,6 +24,7 @@ from stratagems.listen import InputListener
 from stratagems.glyphs import cluster_glyphs
 from stratagems.hdr import HdrCurve, curve_from_config
 from stratagems.learn import LearnWindow
+from stratagems.loadout_log import read_logged_loadout
 from stratagems.ocr import OcrError, ScanResult, capture_region, save_bbox, scan_image
 from stratagems.overlay import WHEEL_X, WHEEL_Y, RadialOverlay
 from stratagems.placement import Monitor, list_monitors, wheel_top_left
@@ -252,6 +253,9 @@ class App:
             if len(names) > MAX_WHEEL:
                 notice += f" · SHOWING {MAX_WHEEL}"
             return entries, notice
+        logged = read_logged_loadout()
+        if logged:
+            return _wheel_entries(logged), _file_notice(logged)
         if self._cache:
             return _wheel_entries(self._cache), self._cache_notice
         return _standing_entries(), _STANDING_NOTICE
@@ -542,6 +546,21 @@ class App:
 
 _STANDING_NAMES = ("Reinforce", "Resupply")
 _STANDING_NOTICE = "REINFORCE AND RESUPPLY · SCAN ADDS THE MISSION LOADOUT"
+_FILE_NOTICE = "LOADOUT FILE · CATALOG CODES"
+
+
+def _file_notice(entries: list[LoadoutEntry]) -> str:
+    notice = _FILE_NOTICE
+    seen = {entry.name.casefold() for entry in _standing_entries()}
+    total = len(seen)
+    for entry in entries:
+        key = entry.name.casefold()
+        if key not in seen:
+            seen.add(key)
+            total += 1
+    if total > MAX_WHEEL:
+        notice += f" · SHOWING {MAX_WHEEL}"
+    return notice
 
 
 def _standing_entries() -> list[LoadoutEntry]:
