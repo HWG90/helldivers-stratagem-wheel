@@ -1,8 +1,12 @@
 """Saved arrow samples decode a strip. A scan without samples does not guess."""
 
+import threading
+
 from PIL import Image, ImageDraw
 
+from stratagems.app import App, _wheel_entries
 from stratagems.catalog import get
+from stratagems.config import Region
 from stratagems.glyphs import (
     arrow_preview,
     cluster_glyphs,
@@ -252,6 +256,114 @@ def test_icon_lut_picks_the_stratagem_when_the_code_is_shared(monkeypatch) -> No
     )
     assert confirmed.entries[0].name == "Reinforcement Pods"
     assert confirmed.entries[0].code == pods.code
+
+
+_MISSION_ROWS = (
+    ("up down right up", "SoS Beacon"),
+    ("down down up right", "Resupply"),
+    ("left down right down left down up left right", "TD-110 Maelstrom"),
+    ("down left down up up right", "AC-8 Autocannon"),
+    ("up right down down down", "Eagle 500kg Bomb"),
+    ("right right down left right down", "Orbital 120mm HE Barrage"),
+    ("right down left up up", "Orbital Gatling Barrage"),
+)
+
+
+def _stack(rows: list[list[str]], glyphs: dict[str, bytearray], *, size: int = 48) -> Image.Image:
+    gap = 18
+    row_gap = 28
+    margin = 20
+    width = margin * 2 + max(len(row) for row in rows) * (size + gap)
+    height = margin * 2 + len(rows) * size + (len(rows) - 1) * row_gap
+    image = Image.new("RGB", (width, height), (0, 0, 0))
+    for index, row in enumerate(rows):
+        top = margin + index * (size + row_gap)
+        _paint_row(image, [glyphs[direction] for direction in row], top=top, size=size)
+    return image
+
+
+class _InlineThread:
+    def __init__(self, target: object = None, args: tuple[object, ...] = (), kwargs: dict[str, object] | None = None, daemon: bool | None = None) -> None:
+        self._target = target
+        self._args = args
+        self._kwargs = kwargs or {}
+
+    def start(self) -> None:
+        target = self._target
+        if callable(target):
+            target(*self._args, **self._kwargs)
+
+
+def test_seven_decoded_rows_all_import(monkeypatch) -> None:
+    monkeypatch.setattr("stratagems.name_ocr.read_names", _refuse_ocr)
+    monkeypatch.setattr("stratagems.ocr.pytesseract.image_to_data", _refuse_ocr)
+    lut, glyphs = _chevron_lut()
+    rows = [code.split() for code, _name in _MISSION_ROWS]
+    image = _stack(rows, glyphs)
+    result = read_loadout(image, glyph_lut=lut)
+    assert [entry.name for entry in result.entries] == [name for _code, name in _MISSION_ROWS]
+    assert len(result.entries) == 7
+    assert result.failure == ""
+    assert result.reader == "samples"
+    _preview, summary = arrow_preview(image, glyph_lut=lut)
+    for code, _name in _MISSION_ROWS:
+        assert code in summary.splitlines()
+
+
+def test_three_codes_in_one_capture_all_land_on_the_wheel(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr(threading, "Thread", _InlineThread)
+    monkeypatch.setattr("stratagems.name_ocr.read_names", _refuse_ocr)
+    monkeypatch.setattr("stratagems.ocr.pytesseract.image_to_data", _refuse_ocr)
+    lut, glyphs = _chevron_lut()
+    codes = [
+        ["up", "right", "down", "down", "down"],
+        ["up", "up", "up", "up"],
+        ["down", "left", "down", "up", "up", "right"],
+        ["right", "down", "left", "up", "up"],
+    ]
+    image = _stack(codes, glyphs)
+
+    def capture(*_args: object, **_kwargs: object) -> Image.Image:
+        return image
+
+    monkeypatch.setattr("stratagems.app.capture_region", capture)
+    app = App(demo=True)
+    try:
+        app.config.region = Region(0, 0, image.width, image.height)
+        app.config.glyph_lut = lut
+        app.scan()
+        app.root.update()
+        app.present(0, 0, dry_run=True)
+        names = [entry.name for entry in app.overlay.entries]
+        assert names == [
+            "Reinforce",
+            "Resupply",
+            "Eagle 500kg Bomb",
+            "AC-8 Autocannon",
+            "Orbital Gatling Barrage",
+        ]
+        assert "up up up up" not in names
+        wheel = _wheel_entries(app._cache or [])
+        assert [entry.name for entry in wheel] == names
+    finally:
+        app.root.destroy()
+
+
+def test_padded_and_failed_rows_keep_the_other_matches(monkeypatch) -> None:
+    monkeypatch.setattr("stratagems.name_ocr.read_names", _refuse_ocr)
+    monkeypatch.setattr("stratagems.ocr.pytesseract.image_to_data", _refuse_ocr)
+    lut, glyphs = _chevron_lut()
+    maelstrom = "left down right down left down up left right".split()
+    rows = [
+        ["left", "down", "down", "up", "right", "left"],
+        ["up", "up", "up", "up"],
+        ["left", "left", "left", "left", *maelstrom, "left", "left", "left", "left"],
+    ]
+    assert len(rows[2]) > 12
+    result = read_loadout(_stack(rows, glyphs), glyph_lut=lut)
+    assert [entry.name for entry in result.entries] == ["Resupply", "TD-110 Maelstrom"]
+    assert result.failure == ""
 
 
 def _sample_triangle(direction: str) -> str:

@@ -2,9 +2,10 @@
 
 Learn segments the calibrated region and clusters identical glyphs. The user
 tags each cluster Up, Down, Left, or Right. A scan compares every glyph to
-those saved patches. A glyph that matches nothing is skipped. The code is
-the matches, left to right. It does not guess from triangle geometry, and
-it does not call an OCR engine.
+those saved patches. A glyph that matches nothing is skipped. Each row is
+looked up on its own. The longest catalog code inside the remaining arrows
+is imported, then the scan continues. It does not guess from triangle
+geometry, and it does not call an OCR engine.
 """
 
 from __future__ import annotations
@@ -216,28 +217,26 @@ def read_loadout(
     seen: set[str] = set()
     ignored = 0
     saw_row = False
-    for run, icon in _runs(prepared):
-        saw_row = True
-        directions: list[str] = []
-        for box in run:
-            direction, score = memory.nearest(box.patch)
-            if score < MIN_NCC:
-                ignored += 1
+    for run, icon in _component_runs(prepared):
+        for row_hits in _split_rows(run):
+            saw_row = True
+            directions: list[str] = []
+            for box in sorted(row_hits, key=lambda hit: hit.x):
+                direction, score = memory.nearest(box.patch)
+                if score < MIN_NCC:
+                    ignored += 1
+                    continue
+                directions.append(direction)
+            if not directions:
                 continue
-            directions.append(direction)
-        if not directions:
-            continue
-        code = tuple(directions)
-        chosen = _catalog_match(code, icon, memory, pool)
-        if chosen is None:
-            continue
-        if icon is not None:
-            memory.remember_icon(chosen.name, icon)
-        key = chosen.name.casefold()
-        if key in seen:
-            continue
-        seen.add(key)
-        entries.append(LoadoutEntry(chosen.name, code, "screen"))
+            for chosen, code in _catalog_codes_in_row(tuple(directions), icon, memory, pool):
+                if icon is not None:
+                    memory.remember_icon(chosen.name, icon)
+                key = chosen.name.casefold()
+                if key in seen:
+                    continue
+                seen.add(key)
+                entries.append(LoadoutEntry(chosen.name, code, "screen"))
     exported_glyphs, exported_icons = memory.export()
     note = _IGNORED_NOTE if ignored else ""
     if not entries:
@@ -347,15 +346,16 @@ def _segment(prepared: Image.Image, memory: ShapeMemory) -> tuple[list[_Row], bo
                     patch=patch,
                 )
             )
-        chosen = _choose_run(hits)
-        if not chosen:
+        chosen_groups = _choose_runs(hits)
+        if not chosen_groups:
             rows.append(_Row((), [], None, (0, top, width, bottom)))
             continue
-        first_x = min(hit.x for hit in chosen)
-        icon = _icon_patch(rejected, first_x)
-        name_right = max(0, first_x - 2)
-        name_box = (0, top, name_right, bottom) if name_right >= 8 else None
-        rows.append(_Row(tuple(hit.direction for hit in chosen), chosen, icon, name_box))
+        for chosen in chosen_groups:
+            first_x = min(hit.x for hit in chosen)
+            icon = _icon_patch(rejected, first_x)
+            name_right = max(0, first_x - 2)
+            name_box = (0, top, name_right, bottom) if name_right >= 8 else None
+            rows.append(_Row(tuple(hit.direction for hit in chosen), chosen, icon, name_box))
     return rows, low_confidence
 
 
@@ -391,19 +391,76 @@ def _catalog_match(
     return None
 
 
+def _catalog_codes_in_row(
+    directions: tuple[str, ...],
+    icon: bytes | None,
+    memory: ShapeMemory,
+    catalog: tuple[Stratagem, ...] | list[Stratagem],
+) -> list[tuple[Stratagem, tuple[str, ...]]]:
+    """Catalog codes that sit contiguously in this row, longest first.
+
+    Ignored shapes are already gone, so a code may be a slice of what remains.
+    A longer code wins over a shorter one that uses the same arrows. The next
+    match in the row is still taken, and the caller still reads the next row.
+    """
+    count = len(directions)
+    longest = min(count, MAX_ARROWS)
+    candidates: list[tuple[int, int, Stratagem, tuple[str, ...]]] = []
+    for length in range(longest, MIN_ARROWS - 1, -1):
+        for start in range(0, count - length + 1):
+            code = directions[start : start + length]
+            chosen = _catalog_match(code, icon, memory, catalog)
+            if chosen is not None:
+                candidates.append((start, length, chosen, code))
+    covered = [False] * count
+    found: list[tuple[int, Stratagem, tuple[str, ...]]] = []
+    for start, length, chosen, code in candidates:
+        if any(covered[start : start + length]):
+            continue
+        for index in range(start, start + length):
+            covered[index] = True
+        found.append((start, chosen, code))
+    found.sort(key=lambda item: item[0])
+    return [(chosen, code) for _start, chosen, code in found]
+
+
+def _split_rows(hits: list[_Hit]) -> list[list[_Hit]]:
+    """Separate stacked stratagem rows that share one ink band."""
+    if not hits:
+        return []
+    ordered = sorted(hits, key=lambda hit: (hit.y, hit.x))
+    heights = sorted(hit.height for hit in ordered)
+    median_h = max(1, heights[len(heights) // 2])
+    rows: list[list[_Hit]] = []
+    for hit in ordered:
+        placed = False
+        for row in rows:
+            if _overlaps_row(hit, row, median_h):
+                row.append(hit)
+                placed = True
+                break
+        if not placed:
+            rows.append([hit])
+    rows.sort(key=lambda row: min(hit.y for hit in row))
+    return rows
+
+
+def _overlaps_row(hit: _Hit, row: list[_Hit], median_h: int) -> bool:
+    top = min(item.y for item in row)
+    bottom = max(item.y + item.height for item in row)
+    overlap = min(hit.y + hit.height, bottom) - max(hit.y, top)
+    return overlap >= median_h * 0.45
+
+
 def _arrow_patches(prepared: Image.Image) -> list[bytes]:
     patches: list[bytes] = []
-    for run, _icon in _component_runs(prepared, arrow_runs_only=False):
+    for run, _icon in _component_runs(prepared):
         for box in run:
             patches.append(box.patch)
     return patches
 
 
-def _runs(prepared: Image.Image) -> list[tuple[list[_Hit], bytes | None]]:
-    return _component_runs(prepared, arrow_runs_only=True)
-
-
-def _component_runs(prepared: Image.Image, *, arrow_runs_only: bool) -> list[tuple[list[_Hit], bytes | None]]:
+def _component_runs(prepared: Image.Image) -> list[tuple[list[_Hit], bytes | None]]:
     gray = prepared.convert("L")
     width, height = gray.size
     found: list[tuple[list[_Hit], bytes | None]] = []
@@ -432,19 +489,13 @@ def _component_runs(prepared: Image.Image, *, arrow_runs_only: bool) -> list[tup
             )
         if not hits:
             continue
-        if arrow_runs_only:
-            chosen = _choose_run(hits)
-            if not chosen:
-                continue
-            kept = chosen
-        else:
-            kept = hits
-        first_x = min(hit.x for hit in kept)
-        found.append((kept, _icon_patch(rejected, first_x)))
+        first_x = min(hit.x for hit in hits)
+        found.append((hits, _icon_patch(rejected, first_x)))
     return found
 
 
-def _choose_run(hits: list[_Hit]) -> list[_Hit]:
+def _choose_runs(hits: list[_Hit]) -> list[list[_Hit]]:
+    """Every left-to-right arrow run in one band. A long run does not drop a short one."""
     if not hits:
         return []
     ordered = sorted(hits, key=lambda hit: hit.x)
@@ -461,11 +512,9 @@ def _choose_run(hits: list[_Hit]) -> list[_Hit]:
             groups[-1].append(hit)
         else:
             groups.append([hit])
-    valid = [group for group in groups if MIN_ARROWS <= len(group) <= MAX_ARROWS]
-    if not valid:
-        return []
-    valid.sort(key=lambda group: (len(group), group[0].x))
-    return valid[-1]
+    valid = [group for group in groups if len(group) >= MIN_ARROWS]
+    valid.sort(key=lambda group: group[0].x)
+    return valid
 
 
 def _icon_patch(rejected: list[tuple[int, int, int, int, int, bytes]], first_arrow_x: int) -> bytes | None:
