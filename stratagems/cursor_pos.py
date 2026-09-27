@@ -66,6 +66,12 @@ class _Win32Cursor:
         self._restore_steps = conceal_cursor(lambda: int(self._user32.ShowCursor(False)))
         self._visible = False
 
+    def keep_hidden(self) -> None:
+        """Drive the display count negative again if a window showed the cursor."""
+        if self._visible:
+            return
+        self._restore_steps += conceal_cursor(lambda: int(self._user32.ShowCursor(False)))
+
     def show(self) -> None:
         if self._visible:
             return
@@ -136,22 +142,38 @@ class _X11Cursor:
         except (OSError, AttributeError):
             fixes = None
         self._xfixes = fixes
+        self._hide_count = 0
 
     def hide(self) -> None:
-        if self._xfixes is None or not self._visible:
+        if self._xfixes is None or self._hide_count:
             return
+        self._xfixes_hide()
+        self._hide_count = 1
+        self._visible = False
+
+    def keep_hidden(self) -> None:
+        if self._xfixes is None or not self._hide_count:
+            return
+        self._xfixes_hide()
+        self._hide_count += 1
+
+    def show(self) -> None:
+        if self._xfixes is None or not self._hide_count:
+            return
+        while self._hide_count:
+            self._xfixes_show()
+            self._hide_count -= 1
+        self._visible = True
+
+    def _xfixes_hide(self) -> None:
         with self._lock:
             self._xfixes.XFixesHideCursor(self._display, self._root)
             self._x11.XFlush(self._display)
-        self._visible = False
 
-    def show(self) -> None:
-        if self._xfixes is None or self._visible:
-            return
+    def _xfixes_show(self) -> None:
         with self._lock:
             self._xfixes.XFixesShowCursor(self._display, self._root)
             self._x11.XFlush(self._display)
-        self._visible = True
 
     def get(self) -> tuple[int, int]:
         root = ctypes.c_ulong()
@@ -200,6 +222,9 @@ class _PynputCursor:
     def hide(self) -> None:
         return
 
+    def keep_hidden(self) -> None:
+        return
+
     def show(self) -> None:
         return
 
@@ -228,6 +253,14 @@ def hide_cursor() -> None:
             return
         _cursor().hide()
         _cursor_hidden = True
+
+
+def keep_cursor_hidden() -> None:
+    """If this process already hid the cursor, push the display count negative again."""
+    with _visibility_lock:
+        if not _cursor_hidden:
+            return
+        _cursor().keep_hidden()
 
 
 def show_cursor() -> None:

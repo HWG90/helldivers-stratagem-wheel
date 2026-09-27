@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+import ctypes
 import math
 import sys
 import tkinter as tk
 from collections.abc import Callable
-
-import ctypes
+from ctypes import wintypes
 
 from stratagems.arrows import format_code
+from stratagems.cursor_pos import keep_cursor_hidden
 from stratagems.catalog import LoadoutEntry
 from stratagems.matching import short_alias
 from stratagems.placement import format_geometry
@@ -26,6 +27,16 @@ INNER = 102
 DEADZONE = 90
 # Windows color key. It is not black, so labels and the center readout stay painted.
 TRANSPARENT_KEY = "#ff00ff"
+# Extended styles for a borderless topmost overlay that does not hit-test the mouse.
+WS_EX_LAYERED = 0x00080000
+WS_EX_TRANSPARENT = 0x00000020
+WS_EX_NOACTIVATE = 0x08000000
+WS_EX_TOOLWINDOW = 0x00000080
+WS_EX_TOPMOST = 0x00000008
+_OVERLAY_EXSTYLE = WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST
+_COLOR_KEY_REF = 0x00FF00FF
+_LWA_COLORKEY = 0x00000001
+_LWA_ALPHA = 0x00000002
 
 
 class RadialOverlay:
@@ -61,8 +72,9 @@ class RadialOverlay:
             self.win.attributes("-topmost", True)
         except tk.TclError:
             pass
-        self.canvas = tk.Canvas(self.win, width=SIZE, height=SIZE, bg=BG, highlightthickness=0, bd=0)
+        self.canvas = tk.Canvas(self.win, width=SIZE, height=SIZE, bg=BG, highlightthickness=0, bd=0, cursor="none")
         self.canvas.pack()
+        self._blank_cursor()
         self.canvas.bind("<ButtonRelease-1>", self._on_left)
         self.canvas.bind("<ButtonRelease-2>", self._on_middle)
         self.win.bind("<Escape>", lambda _event: self.on_cancel())
@@ -91,11 +103,12 @@ class RadialOverlay:
             self.win.attributes("-topmost", True)
         except tk.TclError:
             pass
-        _no_activate(self.win)
         self._apply_chrome()
-        if self.pointer_locked:
-            self.set_pointer_locked(True)
+        _install_overlay_window(self.win, color_key=self.transparent)
+        self._blank_cursor()
         self._redraw()
+        if self.pointer_locked:
+            keep_cursor_hidden()
 
     def hide(self) -> None:
         self.visible = False
@@ -107,6 +120,8 @@ class RadialOverlay:
         """Color-key the backing, gaps, and hazard frame. Wedge outlines stay."""
         self.transparent = enabled
         self._apply_chrome()
+        _install_overlay_window(self.win, color_key=enabled)
+        self._blank_cursor()
         if self.visible:
             self._redraw()
 
@@ -121,10 +136,15 @@ class RadialOverlay:
 
     def set_pointer_locked(self, locked: bool) -> None:
         self.pointer_locked = locked
-        cursor = "none" if locked else ""
+        self._blank_cursor()
+        if locked:
+            keep_cursor_hidden()
+
+    def _blank_cursor(self) -> None:
+        """The overlay never shows an arrow, including inside its rectangle."""
         try:
-            self.win.configure(cursor=cursor)
-            self.canvas.configure(cursor=cursor)
+            self.win.configure(cursor="none")
+            self.canvas.configure(cursor="none")
         except tk.TclError:
             pass
 
@@ -408,16 +428,88 @@ def _arc_points(
     return points
 
 
-def _no_activate(window: tk.Toplevel) -> None:
-    """Keep the overlay from taking focus on Windows so keystrokes reach the game."""
+def overlay_ex_style(current: int) -> int:
+    """Borderless topmost layered window that does not hit-test or take focus."""
+    return int(current) | _OVERLAY_EXSTYLE
+
+
+def _install_overlay_window(window: tk.Toplevel, *, color_key: bool) -> None:
+    """Click-through on Windows. Other platforms keep the Tk frameless window."""
     if sys.platform != "win32":
         return
     window.update_idletasks()
     user32 = ctypes.windll.user32
-    hwnd = user32.GetParent(window.winfo_id()) or window.winfo_id()
-    style = user32.GetWindowLongW(hwnd, -20)
-    no_activate = 0x08000000
-    toolwindow = 0x00000080
-    topmost = 0x00000008
-    user32.SetWindowLongW(hwnd, -20, style | no_activate | toolwindow | topmost)
-    user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
+    hwnd = _top_level_hwnd(user32, int(window.winfo_id()))
+    user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.GetWindowLongW.restype = ctypes.c_long
+    user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_long]
+    user32.SetWindowLongW.restype = ctypes.c_long
+    style = overlay_ex_style(int(user32.GetWindowLongW(hwnd, -20)))
+    user32.SetWindowLongW(hwnd, -20, style)
+    user32.SetWindowPos.argtypes = [
+        wintypes.HWND,
+        wintypes.HWND,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_uint,
+    ]
+    user32.SetWindowPos.restype = wintypes.BOOL
+    no_move = 0x0001
+    no_size = 0x0002
+    no_activate = 0x0010
+    frame_changed = 0x0020
+    user32.SetWindowPos(hwnd, wintypes.HWND(-1), 0, 0, 0, 0, no_move | no_size | no_activate | frame_changed)
+    user32.SetLayeredWindowAttributes.argtypes = [wintypes.HWND, wintypes.DWORD, wintypes.BYTE, wintypes.DWORD]
+    user32.SetLayeredWindowAttributes.restype = wintypes.BOOL
+    if color_key:
+        user32.SetLayeredWindowAttributes(hwnd, _COLOR_KEY_REF, 255, _LWA_COLORKEY | _LWA_ALPHA)
+    else:
+        user32.SetLayeredWindowAttributes(hwnd, 0, 255, _LWA_ALPHA)
+    _set_blank_class_cursor(user32, hwnd)
+
+
+def _top_level_hwnd(user32: ctypes.WinDLL, child: int) -> int:
+    user32.GetAncestor.argtypes = [wintypes.HWND, ctypes.c_uint]
+    user32.GetAncestor.restype = wintypes.HWND
+    root = int(user32.GetAncestor(child, 2) or 0)
+    if root:
+        return root
+    user32.GetParent.argtypes = [wintypes.HWND]
+    user32.GetParent.restype = wintypes.HWND
+    parent = int(user32.GetParent(child) or 0)
+    return parent or child
+
+
+_blank_cursor_handle = 0
+
+
+def _set_blank_class_cursor(user32: ctypes.WinDLL, hwnd: int) -> None:
+    global _blank_cursor_handle
+    if not _blank_cursor_handle:
+        and_mask = (ctypes.c_ubyte * 128)(*([0xFF] * 128))
+        xor_mask = (ctypes.c_ubyte * 128)(*([0] * 128))
+        user32.CreateCursor.argtypes = [
+            wintypes.HINSTANCE,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+        ]
+        user32.CreateCursor.restype = wintypes.HANDLE
+        handle = user32.CreateCursor(None, 0, 0, 32, 32, and_mask, xor_mask)
+        _blank_cursor_handle = int(handle or 0)
+    if not _blank_cursor_handle:
+        return
+    gcl_hcursor = -12
+    if ctypes.sizeof(ctypes.c_void_p) == 8 and hasattr(user32, "SetClassLongPtrW"):
+        user32.SetClassLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
+        user32.SetClassLongPtrW.restype = ctypes.c_void_p
+        user32.SetClassLongPtrW(hwnd, gcl_hcursor, _blank_cursor_handle)
+        return
+    user32.SetClassLongW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_long]
+    user32.SetClassLongW.restype = ctypes.c_ulong
+    user32.SetClassLongW(hwnd, gcl_hcursor, _blank_cursor_handle)
