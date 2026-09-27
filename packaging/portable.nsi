@@ -11,7 +11,7 @@ Name "Helldivers Stratagem Wheel"
 Caption "Helldivers Stratagem Wheel"
 
 !ifndef APP_VERSION
-  !define APP_VERSION "1.0.15"
+  !define APP_VERSION "1.0.16"
 !endif
 InstallDir "$LOCALAPPDATA\HelldiversStratagemWheel\runtime-${APP_VERSION}"
 

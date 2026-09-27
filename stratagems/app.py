@@ -19,7 +19,7 @@ from PIL import Image
 from stratagems.binds import display_bind
 from stratagems.catalog import MAX_WHEEL, LoadoutEntry, get
 from stratagems.config import Config, load_config, save_config
-from stratagems.cursor_pos import get_cursor, hide_cursor, set_cursor, show_cursor
+from stratagems.cursor_pos import get_cursor, set_cursor, show_cursor
 from stratagems.listen import InputListener
 from stratagems.game_focus import helldivers_focused
 from stratagems.glyphs import cluster_glyphs
@@ -45,8 +45,6 @@ class App:
         self._lock = PointerLock(
             get_cursor,
             set_cursor,
-            hide_cursor=hide_cursor,
-            show_cursor=show_cursor,
         )
         self._held_offset = (0, 0)
         self._scan_gen = 0
@@ -366,6 +364,7 @@ class App:
     def _confirm_current(self) -> None:
         if not self.overlay.visible:
             return
+        self._lock.release()
         entry = self.overlay.selected()
         self.overlay.hide()
         self._radial_down = False

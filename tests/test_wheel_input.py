@@ -224,8 +224,8 @@ def test_aim_line_on_the_wheel_tracks_the_offset_and_is_not_a_cursor() -> None:
             demo=True,
             bind_label="Mouse3",
         )
-        assert str(overlay.win["cursor"]) == "none"
-        assert str(overlay.canvas["cursor"]) == "none"
+        assert str(overlay.win["cursor"]) == "arrow"
+        assert str(overlay.canvas["cursor"]) == "arrow"
         overlay.apply_offset(1000, 0)
         assert overlay.highlight == 1
         kinds = [overlay.canvas.type(item) for item in overlay.canvas.find_withtag("aim")]

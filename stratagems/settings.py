@@ -184,7 +184,7 @@ class SettingsWindow:
             "The wheel uses the last scan. It does not capture the screen. "
             "Mouse5, or LEARN, tags arrow shapes from the list. Mouse4, or SCAN, matches those saved shapes once. "
             "The preview does not refresh on a timer. "
-            "The OS cursor hides while you hold the wheel. A line from the wheel center to a dot shows the aim. "
+            "The pointer hides only during a live wheel hold; preview keeps it visible. A line from the wheel center to a dot shows the aim. "
             "Release on a wedge to type that code. Release in the center, or press Escape, to cancel. "
             "Rebind accepts mouse buttons and keys.",
             self.family,

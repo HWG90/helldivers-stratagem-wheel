@@ -10,7 +10,7 @@ from collections.abc import Callable
 from ctypes import wintypes
 
 from stratagems.arrows import format_code
-from stratagems.cursor_pos import keep_cursor_hidden, show_cursor
+from stratagems.cursor_pos import hide_cursor, show_cursor
 from stratagems.catalog import LoadoutEntry
 from stratagems.matching import short_alias
 from stratagems.placement import format_geometry
@@ -72,9 +72,9 @@ class RadialOverlay:
             self.win.attributes("-topmost", True)
         except tk.TclError:
             pass
-        self.canvas = tk.Canvas(self.win, width=SIZE, height=SIZE, bg=BG, highlightthickness=0, bd=0, cursor="none")
+        self.canvas = tk.Canvas(self.win, width=SIZE, height=SIZE, bg=BG, highlightthickness=0, bd=0, cursor="arrow")
         self.canvas.pack()
-        self._blank_cursor()
+        self._sync_cursor()
         self.canvas.bind("<ButtonRelease-1>", self._on_left)
         self.canvas.bind("<ButtonRelease-2>", self._on_middle)
         self.win.bind("<Escape>", lambda _event: self.on_cancel())
@@ -105,24 +105,21 @@ class RadialOverlay:
             pass
         self._apply_chrome()
         _install_overlay_window(self.win, color_key=self.transparent)
-        self._blank_cursor()
+        self._sync_cursor()
         self._redraw()
-        if self.pointer_locked and self.visible:
-            keep_cursor_hidden()
 
     def hide(self) -> None:
         self.visible = False
         self._aim = (0.0, 0.0)
         self.set_pointer_locked(False)
         self.win.withdraw()
-        show_cursor()
 
     def set_transparent(self, enabled: bool) -> None:
         """Color-key the backing, gaps, and hazard frame. Wedge outlines stay."""
         self.transparent = enabled
         self._apply_chrome()
         _install_overlay_window(self.win, color_key=enabled)
-        self._blank_cursor()
+        self._sync_cursor()
         if self.visible:
             self._redraw()
 
@@ -137,17 +134,26 @@ class RadialOverlay:
 
     def set_pointer_locked(self, locked: bool) -> None:
         self.pointer_locked = locked
-        self._blank_cursor()
-        if locked and self.visible:
-            keep_cursor_hidden()
+        self._sync_cursor()
 
-    def _blank_cursor(self) -> None:
-        """The overlay never shows an arrow, including inside its rectangle."""
+    def _sync_cursor(self) -> None:
+        """Only the UI thread owns visibility; never change Tk's shared class cursor.
+
+        The live wheel uses its aim line. Preview and settings retain the normal
+        pointer. Repainting or toggling transparency must not add hide calls.
+        """
+        hidden = self.visible and self.pointer_locked
+        cursor = "none" if hidden else "arrow"
         try:
-            self.win.configure(cursor="none")
-            self.canvas.configure(cursor="none")
+            self.win.configure(cursor=cursor)
+            self.canvas.configure(cursor=cursor)
         except tk.TclError:
-            pass
+            show_cursor()
+            return
+        if hidden:
+            hide_cursor()
+        else:
+            show_cursor()
 
     def set_highlight(self, index: int | None) -> None:
         if index is not None and not 0 <= index < len(self.entries):
@@ -468,7 +474,6 @@ def _install_overlay_window(window: tk.Toplevel, *, color_key: bool) -> None:
         user32.SetLayeredWindowAttributes(hwnd, _COLOR_KEY_REF, 255, _LWA_COLORKEY | _LWA_ALPHA)
     else:
         user32.SetLayeredWindowAttributes(hwnd, 0, 255, _LWA_ALPHA)
-    _set_blank_class_cursor(user32, hwnd)
 
 
 def _top_level_hwnd(user32: ctypes.WinDLL, child: int) -> int:
@@ -481,36 +486,3 @@ def _top_level_hwnd(user32: ctypes.WinDLL, child: int) -> int:
     user32.GetParent.restype = wintypes.HWND
     parent = int(user32.GetParent(child) or 0)
     return parent or child
-
-
-_blank_cursor_handle = 0
-
-
-def _set_blank_class_cursor(user32: ctypes.WinDLL, hwnd: int) -> None:
-    global _blank_cursor_handle
-    if not _blank_cursor_handle:
-        and_mask = (ctypes.c_ubyte * 128)(*([0xFF] * 128))
-        xor_mask = (ctypes.c_ubyte * 128)(*([0] * 128))
-        user32.CreateCursor.argtypes = [
-            wintypes.HINSTANCE,
-            ctypes.c_int,
-            ctypes.c_int,
-            ctypes.c_int,
-            ctypes.c_int,
-            ctypes.c_void_p,
-            ctypes.c_void_p,
-        ]
-        user32.CreateCursor.restype = wintypes.HANDLE
-        handle = user32.CreateCursor(None, 0, 0, 32, 32, and_mask, xor_mask)
-        _blank_cursor_handle = int(handle or 0)
-    if not _blank_cursor_handle:
-        return
-    gcl_hcursor = -12
-    if ctypes.sizeof(ctypes.c_void_p) == 8 and hasattr(user32, "SetClassLongPtrW"):
-        user32.SetClassLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
-        user32.SetClassLongPtrW.restype = ctypes.c_void_p
-        user32.SetClassLongPtrW(hwnd, gcl_hcursor, _blank_cursor_handle)
-        return
-    user32.SetClassLongW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_long]
-    user32.SetClassLongW.restype = ctypes.c_ulong
-    user32.SetClassLongW(hwnd, gcl_hcursor, _blank_cursor_handle)

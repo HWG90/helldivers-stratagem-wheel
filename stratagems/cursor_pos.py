@@ -43,24 +43,10 @@ def conceal_cursor(hide_once: Callable[[], int]) -> int:
 
 
 def reveal_cursor(show_once: Callable[[], int], steps: int = 0) -> int:
-    """Call ShowCursor(TRUE) until the display count is nonnegative.
-
-    ``steps`` is the number of FALSE calls ``conceal_cursor`` recorded.
-    Extra FALSE calls can leave the count negative after that many TRUE
-    calls, which hides the cursor over the settings window too. Keep
-    going until ShowCursor returns a nonnegative count.
-    """
-    done = 0
-    count = -1
-    minimum = max(0, steps)
-    while done < _SHOW_CURSOR_LIMIT:
-        if done >= minimum and count >= 0:
-            return done
-        count = int(show_once())
-        done += 1
-        if count >= 0 and done >= minimum:
-            return done
-    return done
+    """Undo exactly our own decrements, preserving the caller's initial count."""
+    for _ in range(max(0, steps)):
+        show_once()
+    return max(0, steps)
 
 
 class _Win32Cursor:
@@ -95,32 +81,13 @@ class _Win32Cursor:
         except Exception:
             if applied:
                 self._visible = False
-                self._restore_steps = 0
+                self._restore_steps = applied
                 self.show()
             raise
         self._visible = False
 
-    def keep_hidden(self) -> None:
-        """Drive the display count negative again if a window showed the cursor."""
-        if self._visible:
-            return
-        applied = 0
-
-        def hide_once() -> int:
-            nonlocal applied
-            count = int(self._user32.ShowCursor(False))
-            applied += 1
-            return count
-
-        try:
-            self._restore_steps += conceal_cursor(hide_once)
-        except Exception:
-            if applied:
-                self.show()
-            raise
-
     def show(self) -> None:
-        """Call ShowCursor(TRUE) until the display counter is nonnegative."""
+        """Balance this hold on the same UI thread that hid the cursor."""
         if self._visible:
             return
         reveal_cursor(lambda: int(self._user32.ShowCursor(True)), self._restore_steps)
@@ -202,12 +169,6 @@ class _X11Cursor:
         self._xfixes_hide()
         self._hide_count = 1
         self._visible = False
-
-    def keep_hidden(self) -> None:
-        if self._xfixes is None or not self._hide_count:
-            return
-        self._xfixes_hide()
-        self._hide_count += 1
 
     def show(self) -> None:
         if self._xfixes is None or not self._hide_count:
@@ -298,12 +259,7 @@ def set_cursor(x: int, y: int) -> None:
 
 
 def hide_cursor() -> None:
-    """Hide the OS cursor. A second call does nothing until ``show_cursor``.
-
-    On Windows the hide repeats ShowCursor(FALSE) until the display count
-    is negative. ``show_cursor`` calls ShowCursor(TRUE) until that count
-    is nonnegative. This does not run at launch.
-    """
+    """Begin one UI-thread hide; repeated calls are idempotent."""
     global _cursor_hidden
     with _visibility_lock:
         if _cursor_hidden:
@@ -316,32 +272,8 @@ def hide_cursor() -> None:
         _cursor_hidden = True
 
 
-def keep_cursor_hidden() -> None:
-    """If this process already hid the cursor, push the display count negative again.
-
-    No-op unless ``hide_cursor`` ran for an open wheel. A failure restores
-    the cursor instead of leaving the counter negative.
-    """
-    global _cursor_hidden
-    with _visibility_lock:
-        if not _cursor_hidden:
-            return
-        try:
-            _cursor().keep_hidden()
-        except Exception:
-            _restore_open_backend()
-            _cursor_hidden = False
-            return
-
-
 def show_cursor() -> None:
-    """Restore the OS cursor.
-
-    On Windows this calls ShowCursor(TRUE) until the display counter is
-    nonnegative, including FALSE calls that were not part of the recorded
-    conceal. Safe to call when the cursor is already shown, on wheel close,
-    on app exit, and after an interrupted hide. It never hides the cursor.
-    """
+    """End the UI-thread hide, balancing only the changes we made."""
     global _cursor_hidden
     with _visibility_lock:
         _restore_open_backend()
