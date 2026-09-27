@@ -110,6 +110,10 @@ def test_addon_uses_the_loader_log_and_does_not_scan_memory() -> None:
     assert "CowboyBingusModLoader" in source
     assert "open_log" in source
     assert "print('[EquippedStratagems] loaded')" in source
+    assert "script/lua/player" in source
+    assert "stingray.Application.can_get" in source or "app.can_get" in source
+    assert "register_binding" in source
+    assert "Send Strategems" in source
     lowered = source.lower()
     for banned in ("readprocessmemory", "virtualquery", "getmodulehandle", "sigscan", "aob", "ffi"):
         assert banned not in lowered
@@ -201,6 +205,56 @@ assert(EquippedStratagems.publish({'W.A.S.P. Launcher', '500 kg'}))
 assert(bodies[#bodies] == 'StA-X3 W.A.S.P. Launcher\nEagle 500kg Bomb\n')
 assert(not EquippedStratagems.publish({'nope'}))
 assert(bodies[#bodies] == 'StA-X3 W.A.S.P. Launcher\nEagle 500kg Bomb\n')
+package.loaded['script/lua/player'] = {equipped = {'Orbital Gatling Barrage'}}
+_G.StratagemLoadout = {'Eagle 500kg Bomb'}
+update(0.5, 'player-script')
+assert(bodies[#bodies] == 'Orbital Gatling Barrage\n')
+local registered_label = nil
+local down = false
+_G.ModBindingsMenu = {
+    api = 1,
+    register_binding = function(id, label, slot, options)
+        assert(id == 'equippedstratagems.send_strategems')
+        assert(label == 'Send Strategems')
+        assert(slot == nil)
+        assert(type(options) == 'table' and options.category == 'EquippedStratagems')
+        registered_label = label
+        return true
+    end,
+    is_down = function(id)
+        assert(id == 'equippedstratagems.send_strategems')
+        return down
+    end,
+}
+update(0.1, 'bind-register')
+assert(registered_label == 'Send Strategems')
+package.loaded['script/lua/player'] = {loadout = {'Resupply', '500kg'}}
+down = true
+local before_binding = calls
+update(0.1, 'bind-fire')
+assert(calls > before_binding)
+assert(bodies[#bodies] == 'Resupply\nEagle 500kg Bomb\n')
+down = false
+update(0.1, 'bind-up')
+package.loaded['script/lua/player'] = nil
+package.loaded['script/lua/player_hud'] = nil
+local real_require = require
+local asked = nil
+_G.stingray = {
+    Application = {
+        can_get = function(kind, name)
+            return kind == 'lua' and name == 'script/lua/player_hud'
+        end,
+    },
+}
+require = function(name)
+    asked = name
+    return {slots = {'AC-8 Autocannon'}}
+end
+update(0.5, 'require-hud')
+require = real_require
+assert(asked == 'script/lua/player_hud')
+assert(bodies[#bodies] == 'AC-8 Autocannon\n')
 local chained = update
 dofile('mods/EquippedStratagems/EquippedStratagems.lua')
 assert(update == chained)

@@ -2,14 +2,19 @@
 
 -- Writes equipped stratagems, one catalog name per line, for the stratagem wheel.
 -- Bingus Shared Loader discovers this entry, opens the log, and chains update.
--- The list comes from Lua values the game or another addon already published.
--- This file does not scan memory, patch code, or hide itself.
+-- The equipped list is read from the game's script/lua/player module.
+-- Send Strategems is a Mod Bindings Menu binding. This file does not scan
+-- memory, patch code, or hide itself.
 
 local prior = rawget(_G, 'EquippedStratagems')
 if type(prior) == 'table' and prior.mod == 'EquippedStratagems' then return end
 
 local LOG_NAME = 'EquippedStratagems.log'
 local RESOURCE = 'mods/EquippedStratagems/EquippedStratagems'
+local BINDING_ID = 'equippedstratagems.send_strategems'
+local BINDING_LABEL = 'Send Strategems'
+local GAME_SCRIPTS = {'script/lua/player', 'script/lua/player_hud'}
+local NESTED_KEYS = {'loadout', 'stratagems', 'slots', 'player', 'hud', 'equipment'}
 local POLL_SECONDS = 0.5
 local FUNCTION_NAMES = {'equipped', 'loadout', 'slots', 'names', 'get_loadout', 'equipped_stratagems', 'current'}
 local SETTING_KEYS = {'equipped_stratagems', 'stratagem_loadout', 'stratagems', 'loadout'}
@@ -214,6 +219,8 @@ local CATALOG = {
 local api = {api = 1, mod = 'EquippedStratagems', names = nil}
 local last_body = nil
 local elapsed = POLL_SECONDS
+local binding_registered = false
+local binding_down = false
 
 local function fold(value)
     local folded = value:lower()
@@ -325,8 +332,39 @@ local function from_globals()
     return nil
 end
 
-local function collect()
-    if api.names then return api.names end
+local function load_game_script(name)
+    local loaded = package and package.loaded and package.loaded[name]
+    if type(loaded) == 'table' then return loaded end
+    local engine = rawget(_G, 'stingray')
+    local app = engine and engine.Application
+    if not app or type(app.can_get) ~= 'function' then return nil end
+    local ok, available = pcall(app.can_get, 'lua', name)
+    if not ok or not available then return nil end
+    local required, module = pcall(require, name)
+    if required and type(module) == 'table' then return module end
+    loaded = package and package.loaded and package.loaded[name]
+    if type(loaded) == 'table' then return loaded end
+    return nil
+end
+
+local function from_record(module)
+    local names = from_module(module)
+    if names then return names end
+    if type(module) ~= 'table' then return nil end
+    for _, key in ipairs(NESTED_KEYS) do
+        names = from_module(module[key])
+        if names then return names end
+    end
+    return nil
+end
+
+-- script/lua/player is the game module. Require it the same way the loader
+-- requires a lua resource: can_get, then require. Do not wait for publish.
+local function read_equipped()
+    for _, name in ipairs(GAME_SCRIPTS) do
+        local names = from_record(load_game_script(name))
+        if names then return names end
+    end
     return from_globals() or from_user_settings() or from_loaded_modules()
 end
 
@@ -359,14 +397,33 @@ function api.publish(names)
     return true
 end
 
+local function service_binding()
+    local menu = rawget(_G, 'ModBindingsMenu')
+    if type(menu) ~= 'table' or menu.api ~= 1 or type(menu.register_binding) ~= 'function' then return end
+    if not binding_registered then
+        local called, ok = pcall(menu.register_binding, BINDING_ID, BINDING_LABEL, nil, {category = 'EquippedStratagems'})
+        if not called or not ok then return end
+        binding_registered = true
+    end
+    if type(menu.is_down) ~= 'function' then return end
+    local called, down = pcall(menu.is_down, BINDING_ID)
+    if not called or down == nil then return end
+    if down and not binding_down then
+        local names = canonical(read_equipped())
+        if names then write_names(names) end
+    end
+    binding_down = down
+end
+
 rawset(_G, 'EquippedStratagems', api)
 
 local previous_update = rawget(_G, 'update')
 update = function(dt, ...)
+    service_binding()
     elapsed = elapsed + (type(dt) == 'number' and dt or 0)
     if elapsed >= POLL_SECONDS then
         elapsed = 0
-        local names = canonical(collect())
+        local names = canonical(read_equipped())
         if names then write_names(names) end
     end
     if type(previous_update) == 'function' then return previous_update(dt, ...) end

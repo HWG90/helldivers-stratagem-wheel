@@ -126,16 +126,19 @@ Bingus Shared Loader and Mod Bindings Menu do not write `StratagemSlots.log`. Th
 
 `%LOCALAPPDATA%\CowboyBingus\Helldivers2\Logs\EquippedStratagems.log`
 
-EquippedStratagems is a normal disclosed Helldivers 2 mod. It does not scan memory, patch code, or hide itself. Bingus Shared Loader discovers `mods/EquippedStratagems/EquippedStratagems`. The mod calls `CowboyBingusModLoader.open_log` and chains the same `update` callback Mod Bindings Menu uses. Each poll looks for an equipped-name list already published to Lua: a string array on a loadout or stratagem module, a `stingray.Application` user setting, `StratagemLoadout`, `PlayerLoadout`, or `EquippedStratagems.publish`. Matching names are written as catalog names, one per line. The log is rewritten when that list changes. A list that matches nothing leaves the previous file alone. The stratagem wheel program itself still does not attach to the game.
+EquippedStratagems is a normal disclosed Helldivers 2 mod. It does not scan memory, patch code, or hide itself. Bingus Shared Loader discovers `mods/EquippedStratagems/EquippedStratagems`. On each update the mod reads the equipped list from the game modules `script/lua/player` and `script/lua/player_hud`: `stingray.Application.can_get('lua', name)` then `require`, which is how the loader loads a Lua resource. Names are written as catalog names, one per line, and the log is rewritten when that list changes. A list that matches nothing leaves the previous file alone.
+
+It also registers a Mod Bindings Menu binding with `ModBindingsMenu.register_binding('equippedstratagems.send_strategems', 'Send Strategems', nil, {category = 'EquippedStratagems'})`. When **Send Strategems** fires, the same read runs and the log is written. The saved key lives in Mod Bindings Menu's own assignment table. Set the key on the MODS tab. The stratagem wheel program itself still does not attach to the game.
 
 Install EquippedStratagems next to the loader, with Arsenal or HD2MM:
 
 1. Close Helldivers 2. Use one mod manager.
-2. Import [Bingus Shared Loader v15 or newer](https://github.com/CowboyBingus/BingusSharedLoader/releases/latest) (v18 is the current API 1 release) and `mods/EquippedStratagems/EquippedStratagems.zip` from this project.
-3. Enable both. With Arsenal's default priority, put **Bingus Shared Loader last**. If first-mod priority is on, put the loader first. Mod Bindings Menu is not required for this mod.
+2. Import [Bingus Shared Loader v15 or newer](https://github.com/CowboyBingus/BingusSharedLoader/releases/latest) (v18 is the current API 1 release), [Mod Bindings Menu v2](https://github.com/CowboyBingus/ModBindingsMenu/releases/latest), and `mods/EquippedStratagems/EquippedStratagems.zip` from this project.
+3. Enable all three. With Arsenal's default priority, put **Bingus Shared Loader last**. If first-mod priority is on, put the loader first.
 4. Purge / Deploy, then launch the game normally.
 5. Check `%LOCALAPPDATA%\CowboyBingus\Helldivers2\Logs\BingusSharedLoader.log` for `mods/EquippedStratagems/EquippedStratagems: loaded`.
-6. Open the stratagem wheel. Names in the log fill it. If neither log has catalog names, use Learn and Scan as below.
+6. Open Options, then Mouse & Keyboard or Controller, and bind **Send Strategems** on the MODS tab.
+7. Open the stratagem wheel. Names in the log fill it. If neither log has catalog names, use Learn and Scan as below.
 
 The same steps are in `mods/EquippedStratagems/INSTALL.txt`, and that file is packed at the root of the zip. Rebuild the zip after editing the Lua entry:
 
