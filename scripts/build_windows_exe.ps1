@@ -86,7 +86,9 @@ path = Path("build/app.ico")
 path.parent.mkdir(parents=True, exist_ok=True)
 icon.save(path, sizes=[(16, 16), (32, 32), (48, 48), (64, 64)])
 '@
-$iconPy | Invoke-Checked $venvPy "-"
+$iconScript = Join-Path $Root "build\windows\make_icon.py"
+Set-Content -Path $iconScript -Value $iconPy -Encoding ascii
+Invoke-Checked $venvPy $iconScript
 
 $tcltkMsi = Join-Path $Cache "tcltk-$PyVersion.msi"
 if (-not (Test-Path $tcltkMsi) -or (Get-Item $tcltkMsi).Length -eq 0) {
