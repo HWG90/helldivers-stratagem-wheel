@@ -92,8 +92,8 @@ def build(output: Path = OUTPUT) -> Path:
     archive = make_archive({resource_hash(RESOURCE): resource})
     description = (
         "Requires Bingus Shared Loader v15 or newer / API 1. "
-        "Revision 3: exports the local player's selected mission stratagem names to EquippedStratagems.log. "
-        "Visit the mission selection screen before deploying."
+        "Revision 9: exports selected and available mission stratagems, with native HUD eligibility for Hellbomb. "
+        "Live mission updates include cooldown and objective eligibility filtering."
     )
     manifest = {
         "Version": 1,

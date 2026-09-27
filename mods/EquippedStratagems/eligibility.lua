@@ -91,3 +91,30 @@ local function eagle_rearm_available(read, pointer, number, game, settings, payl
     end
     return false
 end
+
+-- Consume the game's computed HUD membership rather than reimplementing its
+-- objective/proximity scan. 0x183399B updates the list even while closed;
+-- 0x1836747 binds each card to its payload kind/index and 0x18387E3 writes
+-- membership before the visibility animation. No native functions are called.
+local function hellbomb_available(read, pointer, number, game, entry_index)
+    local root = pointer(game+0x346d538)
+    assert(read(root+0x24e334,1) == '\1', 'Gameplay HUD not initialized')
+    local state = pointer(game+0x3326340)
+    assert(number(state+0xac21c) == 4, 'Gameplay HUD not active')
+    local panel = root+0x24e340+0x146dc0
+    local list = panel+0x1040
+    for _, pair in ipairs({{panel,root+0x820},{panel+0x110,panel},
+            {panel+0x220,panel+0x110},{list,panel+0x220}}) do
+        assert(pointer(pair[1]+0xf0) == pair[2], 'HUD hierarchy mismatch')
+    end
+    for i=0,15 do
+        local card = list+0x110+i*0x3760
+        assert(pointer(card+0xf0) == list, 'HUD card parent mismatch')
+        if number(card+0x3748) == entry_index and number(card+0x374c) == 42 then
+            local active = read(card+0x36f0,1):byte()
+            assert(active == 0 or active == 1, 'Invalid HUD membership')
+            return active == 1
+        end
+    end
+    return false
+end

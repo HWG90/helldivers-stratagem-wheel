@@ -117,10 +117,12 @@ and state array +0x40 (stride 0x40). Config +0x26 is the game-maintained local
 proximity result; prerequisite config/state flags are checked as well. No game
 functions are called. This relies on the game updating its proximity cache;
 refresh behavior with the stratagem menu closed still needs in-game verification.
-Hellbomb and Eagle Rearm contextual gates remain outstanding.
+These gates were subsequently added in revisions 8 and 9.
 
 Revision 8 gates Eagle Rearm by comparing remaining Eagle uses with their
 maximum (including local-peer capacity upgrades), mirroring 0x66D650 and
 0x879550. Full stock hides Rearm; spent uses expose it. Read failures omit
 Rearm rather than guessing. Unit tests cover upgrades and replenishment;
-in-game validation is pending. Hellbomb contextual gating remains outstanding.
+in-game validation is pending. Hellbomb gating follows in revision 9.
+
+Revision 9: Hellbomb now follows native HUD membership (card +0x36F0), matched to its current payload index and kind. The game updates this state with the menu closed too; the exporter samples it at the configured interval instead of duplicating objective/proximity scans. No verified game event subscription is available, so polling remains. File writes occur only on content changes (or explicit refresh). Local regression tests cover availability transitions, stale HUD data, and portable Hellbomb isolation; live validation is pending.

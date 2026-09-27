@@ -1,4 +1,4 @@
-EquippedStratagems - revision 8
+EquippedStratagems - revision 9
 
 Exports your selected and mission-granted stratagems, one name per line, to:
 %LOCALAPPDATA%\CowboyBingus\Helldivers2\Logs\EquippedStratagems.log
@@ -20,7 +20,7 @@ omits SEAF only. This gate applies with cooldown filtering ON or OFF.
 Revision 7 also gates Upload Data on the game-maintained local in-range flag
 and objective eligibility flags. Missing/unreadable upload state omits Upload
 Data. Eagle Rearm now requires spent Eagle uses, including upgraded capacity.
-Hellbomb still needs its separate contextual check.
+Revision 9 reads Hellbomb eligibility from the native HUD membership state. Unreadable or mismatched HUD data omits Hellbomb. The portable Hellbomb is unaffected.
 
 Optional dependency: CowboyBingus ModOptionsMenu v1 API.
 In Escape > MODS > EquippedStratagems, press APPLY after changing:
@@ -61,3 +61,5 @@ Failed writes/flushes/closes are retried. Send Strategems forces a rewrite.
 
 Upstream loader installation information:
 https://github.com/CowboyBingus/BingusSharedLoader/releases/latest
+
+Revision 9: Hellbomb now follows native HUD membership (card +0x36F0), matched to its current payload index and kind. The game updates this state with the menu closed too; the exporter samples it at the configured interval instead of duplicating objective/proximity scans. No verified game event subscription is available, so polling remains. File writes occur only on content changes (or explicit refresh). Local regression tests cover availability transitions, stale HUD data, and portable Hellbomb isolation; live validation is pending.

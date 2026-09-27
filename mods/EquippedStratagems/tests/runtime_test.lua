@@ -161,7 +161,7 @@ local function mission_entries(kinds, peer)
     local payload=record+0x38
     put(payload+0x788,bytes(#kinds,4))
     local codes={[3]='12333',[136]='223423',[4]='23411',[25]='343112',
-        [124]='13241',[145]='1321',[33]='3312',[50]='432343142',[128]='42111',[28]='2113',[49]='11412'}
+        [124]='13241',[145]='1321',[33]='3312',[50]='432343142',[128]='42111',[28]='2113',[49]='11412',[42]='31431231',[120]='32111'}
     for i,kind in ipairs(kinds) do
         put(payload+0x188+(i-1)*0x30,bytes(kind,4))
         put(payload+0x191+(i-1)*0x30,string.char(i>4 and 1 or 0))
@@ -282,3 +282,34 @@ update(0.5);assert(files['EquippedStratagems.log']=='Eagle 500kg Bomb\nEagle Rea
 put(payload+0x188+4,bytes(3,4));update(0.5)
 assert(files['EquippedStratagems.log']=='Eagle 500kg Bomb\n','full upgraded stock hides Rearm')
 print('PASS: Eagle Rearm full/spent/replenished stock and local upgrade eligibility')
+
+
+-- Hellbomb follows computed native membership, including when the menu is closed.
+setup();mission_entries({42,120});update(0.5)
+assert(files['EquippedStratagems.log']=='B-100 Portable Hellbomb\n','unreadable HUD fails closed; portable unaffected')
+local hud=0x30000000
+local panel=hud+0x24e340+0x146dc0
+local list=panel+0x1040
+put(game+0x346d538,bytes(hud));put(hud+0x24e334,'\1')
+put(game+0x3326340,bytes(0x31000000));put(0x31000000+0xac21c,bytes(4,4))
+for _,pair in ipairs({{panel,hud+0x820},{panel+0x110,panel},{panel+0x220,panel+0x110},{list,panel+0x220}}) do
+    put(pair[1]+0xf0,bytes(pair[2]))
+end
+for i=0,15 do
+    local card=list+0x110+i*0x3760
+    put(card+0xf0,bytes(list));put(card+0x3748,bytes(i,4));put(card+0x374c,bytes(i==0 and 42 or 0,4))
+    put(card+0x36f0,'\0')
+end
+update(0.5)
+assert(files['EquippedStratagems.log']=='B-100 Portable Hellbomb\n','mission payload is not objective availability')
+put(list+0x110+0x36f0,'\1');update(0.5)
+assert(files['EquippedStratagems.log']=='NUX-223 Hellbomb\nB-100 Portable Hellbomb\n','eligible objective appears')
+local previous_writes=writes['EquippedStratagems.log'];update(0.5)
+assert(writes['EquippedStratagems.log']==previous_writes,'unchanged eligibility does not rewrite log')
+put(list+0x110+0x36f0,'\0');update(0.5)
+assert(files['EquippedStratagems.log']=='B-100 Portable Hellbomb\n','leaving or finishing objective removes Hellbomb')
+put(list+0x110+0x36f0,'\1');put(list+0x110+0x3748,bytes(1,4));update(0.5)
+assert(files['EquippedStratagems.log']=='B-100 Portable Hellbomb\n','stale HUD payload index rejected')
+put(list+0x110+0x3748,bytes(0,4));put(panel+0xf0,bytes(hud));update(0.5)
+assert(files['EquippedStratagems.log']=='B-100 Portable Hellbomb\n','replaced HUD fails closed')
+print('PASS: Hellbomb native membership transitions, stale HUD, portable isolation, change-only writes')

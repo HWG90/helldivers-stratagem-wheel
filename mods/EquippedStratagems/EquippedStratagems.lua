@@ -6,7 +6,7 @@ local LOG_NAME = 'EquippedStratagems.log'
 local TABLE_RVA, MISSION_RVA = 0x37cb600, 0x33266a0
 local BINDING_ID, BINDING_LABEL = 'equippedstratagems.send_strategems', 'Send Strategems'
 local POLL_SECONDS, MAX_EQUIPPED = 0.5, 32
-local api = {api=1, mod='EquippedStratagems', revision=8, names=nil}
+local api = {api=1, mod='EquippedStratagems', revision=9, names=nil}
 local elapsed, binding_registered, binding_down = POLL_SECONDS, false, false
 local CATALOG = {
     ["40 k meltagun"] = "40-K Meltagun",
@@ -538,6 +538,33 @@ local function eagle_rearm_available(read, pointer, number, game, settings, payl
     end
     return false
 end
+
+-- Consume the game's computed HUD membership rather than reimplementing its
+-- objective/proximity scan. 0x183399B updates the list even while closed;
+-- 0x1836747 binds each card to its payload kind/index and 0x18387E3 writes
+-- membership before the visibility animation. No native functions are called.
+local function hellbomb_available(read, pointer, number, game, entry_index)
+    local root = pointer(game+0x346d538)
+    assert(read(root+0x24e334,1) == '\1', 'Gameplay HUD not initialized')
+    local state = pointer(game+0x3326340)
+    assert(number(state+0xac21c) == 4, 'Gameplay HUD not active')
+    local panel = root+0x24e340+0x146dc0
+    local list = panel+0x1040
+    for _, pair in ipairs({{panel,root+0x820},{panel+0x110,panel},
+            {panel+0x220,panel+0x110},{list,panel+0x220}}) do
+        assert(pointer(pair[1]+0xf0) == pair[2], 'HUD hierarchy mismatch')
+    end
+    for i=0,15 do
+        local card = list+0x110+i*0x3760
+        assert(pointer(card+0xf0) == list, 'HUD card parent mismatch')
+        if number(card+0x3748) == entry_index and number(card+0x374c) == 42 then
+            local active = read(card+0x36f0,1):byte()
+            assert(active == 0 or active == 1, 'Invalid HUD membership')
+            return active == 1
+        end
+    end
+    return false
+end
 -- Selected-loadout reader. Layout evidence: installed DiverKit
 -- diverkit-alpha8.10.1-preview-compact-badge-20260927 (read_equipment).
 -- The player-manager block is NOT an array of equipped StratagemInfo IDs.
@@ -788,7 +815,11 @@ local function mission_loadout(reader, game)
                 cooling = future(cooldown) or future(read(entry+0x20,8))
             end
             local available, gate = true, 'payload'
-            if kind == 28 then
+            if kind == 42 then
+                local checked, result = pcall(hellbomb_available, read, pointer, number, game, i)
+                available = checked and result == true
+                gate = checked and (available and 'hellbomb_hud_available' or 'hellbomb_context_inactive') or 'hellbomb_state_unreadable'
+            elseif kind == 28 then
                 local checked, result = pcall(seaf_available, read, pointer, number, game)
                 available = checked and result == true
                 gate = checked and (available and 'seaf_enabled' or 'seaf_locked_or_empty') or 'seaf_state_unreadable'
@@ -860,7 +891,7 @@ local function flush_loadout(force)
     pending_write = not wrote
     if wrote then api.names = names end
     api.status = wrote and (state and 'captured' or (selected and 'retained last valid list' or 'waiting for local loadout')) or write_error
-    last_diagnostic = 'EquippedStratagems revision 8\nstatus=' .. tostring(api.status)
+    last_diagnostic = 'EquippedStratagems revision 9\nstatus=' .. tostring(api.status)
         .. '\nhide_cooldowns=' .. tostring(options.hide_cooldowns) .. '\ninclude_grants=' .. tostring(options.include_grants)
         .. '\nreader=' .. tostring(reason) .. '\ncount=' .. #names
         .. '\nmission=' .. tostring(mission)
@@ -940,4 +971,4 @@ update = function(dt, ...)
     end
     return after_update(dt)
 end
-print('[EquippedStratagems] revision 8 loaded')
+print('[EquippedStratagems] revision 9 loaded')

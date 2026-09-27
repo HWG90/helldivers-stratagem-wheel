@@ -248,7 +248,11 @@ local function mission_loadout(reader, game)
                 cooling = future(cooldown) or future(read(entry+0x20,8))
             end
             local available, gate = true, 'payload'
-            if kind == 28 then
+            if kind == 42 then
+                local checked, result = pcall(hellbomb_available, read, pointer, number, game, i)
+                available = checked and result == true
+                gate = checked and (available and 'hellbomb_hud_available' or 'hellbomb_context_inactive') or 'hellbomb_state_unreadable'
+            elseif kind == 28 then
                 local checked, result = pcall(seaf_available, read, pointer, number, game)
                 available = checked and result == true
                 gate = checked and (available and 'seaf_enabled' or 'seaf_locked_or_empty') or 'seaf_state_unreadable'
@@ -320,7 +324,7 @@ local function flush_loadout(force)
     pending_write = not wrote
     if wrote then api.names = names end
     api.status = wrote and (state and 'captured' or (selected and 'retained last valid list' or 'waiting for local loadout')) or write_error
-    last_diagnostic = 'EquippedStratagems revision 8\nstatus=' .. tostring(api.status)
+    last_diagnostic = 'EquippedStratagems revision 9\nstatus=' .. tostring(api.status)
         .. '\nhide_cooldowns=' .. tostring(options.hide_cooldowns) .. '\ninclude_grants=' .. tostring(options.include_grants)
         .. '\nreader=' .. tostring(reason) .. '\ncount=' .. #names
         .. '\nmission=' .. tostring(mission)
@@ -400,4 +404,4 @@ update = function(dt, ...)
     end
     return after_update(dt)
 end
-print('[EquippedStratagems] revision 8 loaded')
+print('[EquippedStratagems] revision 9 loaded')
