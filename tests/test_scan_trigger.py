@@ -81,7 +81,7 @@ def test_opening_the_wheel_does_not_scan_and_the_hotkey_does(tmp_path, monkeypat
 
         app.present(0, 0, dry_run=True)
         assert calls == ["scan"]
-        assert app.overlay.entries[0].name == "Resupply"
+        assert [entry.name for entry in app.overlay.entries] == ["Reinforce", "Resupply"]
     finally:
         app.root.destroy()
 
@@ -122,7 +122,7 @@ def test_an_empty_scan_keeps_the_saved_loadout(tmp_path, monkeypatch) -> None:
         app._on_key("mouse4", True)
         app.root.update()
         app.present(0, 0, dry_run=True)
-        assert app.overlay.entries == []
+        assert [entry.name for entry in app.overlay.entries] == ["Reinforce", "Resupply"]
         assert "confidence threshold" in app.overlay.notice
         assert "Name recognition returned no text" in app.settings.status.get()
     finally:
@@ -172,5 +172,47 @@ def test_preview_updates_on_slider_release_and_auto_without_replacing_the_loadou
         assert paints == ["paint", "paint"]
         assert app._cache[0].name == "Reinforce"
         assert not app.root.tk.call("after", "info")
+    finally:
+        app.root.destroy()
+
+
+def test_reinforce_and_resupply_are_always_on_the_wheel_from_the_catalog(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr(threading, "Thread", _InlineThread)
+    calls: list[str] = []
+
+    def fake_scan_image(*_args: object, **_kwargs: object) -> ScanResult:
+        calls.append("scan")
+        return ScanResult(
+            [
+                LoadoutEntry("Eagle Airstrike", ("up", "right", "down", "right"), "screen"),
+                LoadoutEntry("Reinforce", ("left", "left", "left", "left"), "screen"),
+                LoadoutEntry("Resupply", ("up", "up", "up", "up"), "screen"),
+                LoadoutEntry("reinforce", ("down", "down", "down", "down"), "screen"),
+            ],
+            {},
+            {},
+        )
+
+    monkeypatch.setattr("stratagems.app.scan_image", fake_scan_image)
+    monkeypatch.setattr("stratagems.app.capture_region", lambda *_a, **_k: Image.new("RGB", (8, 8)))
+    app = App(demo=True)
+    try:
+        app.present(0, 0, dry_run=True)
+        assert calls == []
+        assert [(entry.name, entry.code, entry.code_source) for entry in app.overlay.entries] == [
+            ("Reinforce", ("up", "down", "right", "left", "up"), "table"),
+            ("Resupply", ("down", "down", "up", "right"), "table"),
+        ]
+
+        app.config.region = Region(0, 0, 20, 20)
+        app._on_mouse("mouse4", True, 0, 0)
+        app.root.update()
+        app.present(0, 0, dry_run=True)
+        assert [entry.name for entry in app.overlay.entries] == ["Reinforce", "Resupply", "Eagle Airstrike"]
+        assert app.overlay.entries[0].code == ("up", "down", "right", "left", "up")
+        assert app.overlay.entries[1].code == ("down", "down", "up", "right")
+        assert app.overlay.entries[0].code_source == "table"
+        assert app.overlay.entries[2].code_source == "screen"
     finally:
         app.root.destroy()

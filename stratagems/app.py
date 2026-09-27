@@ -17,7 +17,7 @@ from pathlib import Path
 from PIL import Image
 
 from stratagems.binds import display_bind
-from stratagems.catalog import MAX_WHEEL, LoadoutEntry, get, sample_loadout
+from stratagems.catalog import MAX_WHEEL, LoadoutEntry, get
 from stratagems.config import Config, load_config, save_config
 from stratagems.cursor_pos import get_cursor, hide_cursor, set_cursor, show_cursor
 from stratagems.listen import InputListener
@@ -243,21 +243,21 @@ class App:
 
     def _immediate_state(self) -> tuple[list[LoadoutEntry], str]:
         if self.config.manual_override:
-            entries = _pinned(self.config)
-            if not entries:
-                return [], "MANUAL LOADOUT IS EMPTY — PIN STRATAGEMS"
+            pinned = _pinned(self.config)
+            entries = _wheel_entries(pinned)
+            if not pinned:
+                return entries, _STANDING_NOTICE
             notice = "MANUAL LOADOUT"
-            if len(self.config.pinned) > MAX_WHEEL:
+            names = {entry.name.casefold() for entry in _standing_entries()}
+            names.update(entry.name.casefold() for entry in pinned)
+            if len(names) > MAX_WHEEL:
                 notice += f" · SHOWING {MAX_WHEEL}"
             return entries, notice
-        if self.config.region is None:
-            sample = [LoadoutEntry(item.name, item.code, "sample") for item in sample_loadout()]
-            return sample, "NOT CALIBRATED — SAMPLE LOADOUT"
         if self._cache:
-            return list(self._cache), self._cache_notice
+            return _wheel_entries(self._cache), self._cache_notice
         if self._scan_failure:
-            return [], self._scan_failure
-        return [], "NO MISSION SCAN — PRESS THE SCAN BIND"
+            return _standing_entries(), self._scan_failure
+        return _standing_entries(), _STANDING_NOTICE
 
     def _apply_scan(
         self,
@@ -274,8 +274,9 @@ class App:
             message = error or "Scan failed."
             self.settings.set_status(message)
             self.settings.append_log(f"Scan failed: {message}")
-            if self.overlay.visible and not self._cache:
-                self.overlay.set_state([], message.upper(), display_bind(self.config.radial_bind))
+            if self.overlay.visible and not self._cache and not self.config.manual_override:
+                standing, _notice = self._immediate_state()
+                self.overlay.set_state(standing, message.upper(), display_bind(self.config.radial_bind))
             return
         entries = list(result.entries)
         if not entries:
@@ -288,7 +289,8 @@ class App:
                 message = reason
                 self._scan_failure = reason
                 if self.overlay.visible and not self.config.manual_override:
-                    self.overlay.set_state([], reason, display_bind(self.config.radial_bind))
+                    standing, notice = self._immediate_state()
+                    self.overlay.set_state(standing, notice, display_bind(self.config.radial_bind))
             self.settings.set_status(message)
             self.settings.append_log(message)
             return
@@ -297,12 +299,12 @@ class App:
         self.config.icon_lut = dict(result.icon_lut)
         save_config(self.config)
         total = len(entries)
-        capped = entries[:MAX_WHEEL]
-        notice = _scan_notice(capped, total)
-        self._cache = capped
+        notice = _scan_notice(entries, total)
+        self._cache = entries
         self._cache_notice = notice
+        shown = _wheel_entries(entries)
         if self.overlay.visible and not self.config.manual_override:
-            self.overlay.set_state(capped, notice, display_bind(self.config.radial_bind))
+            self.overlay.set_state(shown, notice, display_bind(self.config.radial_bind))
         names = ", ".join(entry.name for entry in capped) or "none"
         noun = "stratagem" if total == 1 else "stratagems"
         self.settings.set_status(f"Scan found {total} {noun}.")
@@ -530,12 +532,40 @@ class App:
             return
         if self.demo:
             self.settings.set_status(
-                "Demo mode. Sample loadout is on the wheel. Confirming a wedge logs the keys and does not send them."
+                "Demo mode. Reinforce and Resupply are on the wheel. Confirming a wedge logs the keys and does not send them."
             )
             return
         self.settings.set_status(
             "Hold Mouse3 to open the wheel. Mouse5 learns arrow shapes. Mouse4 scans. Escape cancels."
         )
+
+
+_STANDING_NAMES = ("Reinforce", "Resupply")
+_STANDING_NOTICE = "REINFORCE AND RESUPPLY · SCAN ADDS THE MISSION LOADOUT"
+
+
+def _standing_entries() -> list[LoadoutEntry]:
+    """Catalog codes for the stratagems that are always on the wheel."""
+    entries: list[LoadoutEntry] = []
+    for name in _STANDING_NAMES:
+        item = get(name)
+        if item is None:
+            continue
+        entries.append(LoadoutEntry(item.name, item.code, "table"))
+    return entries
+
+
+def _wheel_entries(extra: list[LoadoutEntry]) -> list[LoadoutEntry]:
+    """Reinforce and Resupply, then the mission loadout, each name once."""
+    merged = _standing_entries()
+    seen = {entry.name.casefold() for entry in merged}
+    for entry in extra:
+        key = entry.name.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(entry)
+    return merged[:MAX_WHEEL]
 
 
 def _pinned(config: Config) -> list[LoadoutEntry]:
@@ -545,8 +575,6 @@ def _pinned(config: Config) -> list[LoadoutEntry]:
         if item is None:
             continue
         entries.append(LoadoutEntry(item.name, item.code, "manual"))
-        if len(entries) == MAX_WHEEL:
-            break
     return entries
 
 

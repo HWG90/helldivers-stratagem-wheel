@@ -91,7 +91,7 @@ The settings window is a normal window titled Stratagem Terminal. The wheel is a
 | Direction keys | Arrow keys |
 | Cancel | Release in the center deadzone, or **Escape** |
 
-Hold the radial bind. The wheel opens at the center of the monitor that contains the cursor and stays there until you release. It shows the last successful scan. It does not capture the screen. Press the scan bind (Mouse4 by default), or **SCAN** in the terminal, to match the calibrated region once against the shapes Learn saved. That loadout stays until the next press. The OS cursor hides while the wheel bind is held: on Windows that repeats ShowCursor until the display count is negative, and the overlay uses a blank cursor. Aim with the mouse: each movement is added to a virtual offset from the spot where you pressed, and the cursor is warped back there so a game camera does not spin. The warp's own mouse event is ignored. A line on the wheel runs from the center to a dot at that offset, clamped to the wheel radius. Moving back toward the center shortens the stored offset, so the line shrinks. Inside the deadzone the line is short. The dot stays on the wheel; the wedge still uses the real offset. That line is the only aim indicator. Release outside the center deadzone to type that stratagem. Release inside the deadzone, or press Escape, to cancel. Releasing shows the cursor again on the saved spot.
+Hold the radial bind. The wheel opens at the center of the monitor that contains the cursor and stays there until you release. Reinforce and Resupply are always on it, using the catalog codes, before any scan. A scan adds the rest of the mission loadout and does not list those two twice. Opening the wheel does not capture the screen. Press the scan bind (Mouse4 by default), or **SCAN** in the terminal, to match the calibrated region once against the shapes Learn saved. That loadout stays until the next press. The OS cursor hides while the wheel bind is held: on Windows that repeats ShowCursor until the display count is negative, and the overlay uses a blank cursor. Aim with the mouse: each movement is added to a virtual offset from the spot where you pressed, and the cursor is warped back there so a game camera does not spin. The warp's own mouse event is ignored. A line on the wheel runs from the center to a dot at that offset, clamped to the wheel radius. Moving back toward the center shortens the stored offset, so the line shrinks. Inside the deadzone the line is short. The dot stays on the wheel; the wedge still uses the real offset. That line is the only aim indicator. Release outside the center deadzone to type that stratagem. Release inside the deadzone, or press Escape, to cancel. Releasing shows the cursor again on the saved spot.
 
 **Transparent wheel** is off by default. When it is on, each wedge keeps its yellow outline and the fill is see-through. The backing, the gaps, and the hazard frame use a transparent color key. Labels and the center readout stay readable.
 
@@ -116,7 +116,7 @@ The DRY RUN section prints the exact timestamps and keys for any stratagem in th
 
 ## Learn and scan
 
-Until a region is saved, the wheel shows **NOT CALIBRATED — SAMPLE LOADOUT** and a built-in sample (Reinforce, Resupply, SoS Beacon, Eagle Rearm, Eagle Airstrike, Eagle 500kg Bomb, Orbital Precision Strike, Hellbomb, SEAF Artillery, Machine Gun). You can use that wheel immediately.
+The wheel always shows **Reinforce** and **Resupply** from the catalog. You can call those in before any scan or Learn. A scan adds the other stratagems it reads. If that list also contains Reinforce or Resupply, each name appears once.
 
 To read the list from the game:
 
@@ -138,7 +138,7 @@ The wheel shows up to 12 stratagems, which covers a normal loadout plus mission 
 
 ## Manual loadout
 
-Turn on **Manual override**, then pin stratagems from the checklist. The wheel uses that list and skips the scan. Pin order is the order you check them. Past 12, the wheel keeps the first 12.
+Turn on **Manual override**, then pin stratagems from the checklist. The wheel uses that list and skips the scan. Reinforce and Resupply stay on the wheel. Pin order follows them. Past 12 names, the wheel keeps the first 12.
 
 ## Config
 
