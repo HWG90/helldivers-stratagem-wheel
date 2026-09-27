@@ -193,35 +193,45 @@ class RadialOverlay:
         canvas.delete("all")
         if not self.transparent:
             paint_hazard_border(canvas, SIZE, SIZE, band=18, tags=("hazard",))
-        canvas.create_text(
-            SIZE / 2,
-            40,
-            text="STRATAGEM WHEEL",
-            fill=YELLOW,
-            font=(self.title_family, 18, "bold"),
-        )
-        if self.notice:
-            canvas.create_rectangle(36, 58, SIZE - 36, 96, fill=YELLOW, outline="")
             canvas.create_text(
                 SIZE / 2,
-                77,
-                text=self.notice,
-                fill=BLACK,
-                font=(self.family, 11, "bold"),
+                40,
+                text="STRATAGEM WHEEL",
+                fill=YELLOW,
+                font=(self.title_family, 18, "bold"),
+                tags="chrome",
             )
+            if self.notice:
+                canvas.create_rectangle(36, 58, SIZE - 36, 96, fill=YELLOW, outline="", tags="chrome")
+                canvas.create_text(
+                    SIZE / 2,
+                    77,
+                    text=self.notice,
+                    fill=BLACK,
+                    font=(self.family, 11, "bold"),
+                    tags="chrome",
+                )
         self._draw_wedges()
         self._draw_center()
         self._draw_aim()
-        hint = self._hint()
-        canvas.create_text(SIZE / 2, SIZE - 46, text=hint, fill=WHITE, font=(self.family, 10, "bold"))
-        if self.demo:
+        if not self.transparent:
             canvas.create_text(
                 SIZE / 2,
-                SIZE - 26,
-                text="DEMO · SEQUENCES ARE LOGGED, NOT SENT",
-                fill=MUTED,
-                font=(self.family, 9, "bold"),
+                SIZE - 46,
+                text=self._hint(),
+                fill=WHITE,
+                font=(self.family, 10, "bold"),
+                tags="chrome",
             )
+            if self.demo:
+                canvas.create_text(
+                    SIZE / 2,
+                    SIZE - 26,
+                    text="DEMO · SEQUENCES ARE LOGGED, NOT SENT",
+                    fill=MUTED,
+                    font=(self.family, 9, "bold"),
+                    tags="chrome",
+                )
 
     def _hint(self) -> str:
         if self.demo:

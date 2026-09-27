@@ -246,13 +246,28 @@ def test_aim_line_on_the_wheel_tracks_the_offset_and_is_not_a_cursor() -> None:
         assert overlay.canvas.find_withtag("hazard")
         wedge = overlay.canvas.find_withtag("wedge")[0]
         assert overlay.canvas.itemcget(wedge, "stipple") == ""
+        overlay.apply_offset(140, 0)
+        overlay.notice = "Row 1 has an arrow that does not match a saved sample."
         overlay.set_transparent(True)
         assert overlay.canvas.find_withtag("hazard") == ()
+        assert overlay.canvas.find_withtag("chrome") == ()
+        assert overlay.canvas.find_withtag("wedge")
+        assert overlay.canvas.find_withtag("aim")
         assert str(overlay.canvas["bg"]).lower() == TRANSPARENT_KEY
+        texts = [
+            overlay.canvas.itemcget(item, "text")
+            for item in overlay.canvas.find_all()
+            if overlay.canvas.type(item) == "text"
+        ]
+        assert "STRATAGEM WHEEL" not in texts
+        assert not any(text.startswith("HOLD ") for text in texts)
+        assert not any("does not match" in text for text in texts)
+        assert any(text for text in texts)
         for item in overlay.canvas.find_withtag("wedge"):
             assert overlay.canvas.itemcget(item, "outline").lower() == YELLOW.lower()
             assert overlay.canvas.itemcget(item, "stipple") in {"gray50", "gray75"}
         overlay.set_transparent(False)
         assert overlay.canvas.find_withtag("hazard")
+        assert overlay.canvas.find_withtag("chrome")
     finally:
         root.destroy()

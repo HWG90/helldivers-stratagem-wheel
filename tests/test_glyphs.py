@@ -183,26 +183,50 @@ def test_scan_without_samples_tells_the_user_to_learn(monkeypatch) -> None:
     assert "Learn" in result.failure
 
 
-def test_an_unmatched_glyph_names_the_row_and_returns_nothing(monkeypatch) -> None:
-    monkeypatch.setattr("stratagems.name_ocr.read_names", _refuse_ocr)
-    lut, _glyphs = _chevron_lut()
-    size = 48
-    ring = bytearray(size * size)
+def _ring(size: int = 48) -> bytearray:
+    bits = bytearray(size * size)
     for y in range(size):
         for x in range(size):
             if min(x, y, size - 1 - x, size - 1 - y) < 6:
-                ring[y * size + x] = 1
+                bits[y * size + x] = 1
+    return bits
+
+
+def _paint_row(image: Image.Image, glyphs: list[bytearray], *, top: int, size: int = 48) -> None:
     gap = 18
-    margin = 20
-    width = margin + 5 * (size + gap)
-    image = Image.new("RGB", (width, size + margin * 2), (0, 0, 0))
-    x = margin
-    for _index in range(5):
-        _paint(ring, size, (x, margin), image)
+    x = 20
+    for bits in glyphs:
+        _paint(bits, size, (x, top), image)
         x += size + gap
+
+
+def test_unmatched_shapes_are_skipped_and_matching_rows_import(monkeypatch) -> None:
+    monkeypatch.setattr("stratagems.name_ocr.read_names", _refuse_ocr)
+    monkeypatch.setattr("stratagems.ocr.pytesseract.image_to_data", _refuse_ocr)
+    lut, glyphs = _chevron_lut()
+    code = ["up", "down", "right", "left", "up"]
+    ring = _ring()
+    size = 48
+    matched = [glyphs[direction] for direction in code]
+    matched.insert(2, ring)
+    height = 20 + size + 30 + size + 20
+    width = 20 + 6 * (size + 18)
+    image = Image.new("RGB", (width, height), (0, 0, 0))
+    _paint_row(image, [ring, ring, ring, ring, ring], top=20)
+    _paint_row(image, matched, top=20 + size + 30)
     result = read_loadout(image, glyph_lut=lut)
-    assert result.entries == []
-    assert result.failure == "Row 1 has an arrow that does not match a saved sample."
+    assert [entry.name for entry in result.entries] == ["Reinforce"]
+    assert list(result.entries[0].code) == code
+    assert result.failure == ""
+    assert result.note == "Some shapes were ignored."
+
+    rings_only = Image.new("RGB", (width, size + 40), (0, 0, 0))
+    _paint_row(rings_only, [ring, ring, ring, ring, ring], top=20)
+    missed = read_loadout(rings_only, glyph_lut=lut)
+    assert missed.entries == []
+    assert "Row" not in missed.failure
+    assert "does not match a saved sample" not in missed.failure
+    assert "Some shapes were ignored." in missed.failure
 
 
 def test_icon_lut_picks_the_stratagem_when_the_code_is_shared(monkeypatch) -> None:

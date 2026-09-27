@@ -2,8 +2,9 @@
 
 Learn segments the calibrated region and clusters identical glyphs. The user
 tags each cluster Up, Down, Left, or Right. A scan compares every glyph to
-those saved patches. It does not guess from triangle geometry, and it does
-not call an OCR engine.
+those saved patches. A glyph that matches nothing is skipped. The code is
+the matches, left to right. It does not guess from triangle geometry, and
+it does not call an OCR engine.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ CLUSTER_NCC = 0.90
 ICON_MIN = 0.58
 _DIRECTIONS = ("up", "down", "left", "right")
 _LEARN_HINT = "No arrow samples saved. Open the stratagem list and run Learn."
+_IGNORED_NOTE = "Some shapes were ignored."
 
 
 @dataclass
@@ -35,6 +37,7 @@ class ScanResult:
     icon_lut: dict[str, str]
     reader: str = ""
     failure: str = ""
+    note: str = ""
 
 
 @dataclass
@@ -211,27 +214,23 @@ def read_loadout(
     pool = tuple(catalog) if catalog is not None else STRATAGEMS
     entries: list[LoadoutEntry] = []
     seen: set[str] = set()
-    for row_index, (run, icon) in enumerate(_runs(prepared), start=1):
+    ignored = 0
+    saw_row = False
+    for run, icon in _runs(prepared):
+        saw_row = True
         directions: list[str] = []
         for box in run:
             direction, score = memory.nearest(box.patch)
             if score < MIN_NCC:
-                return ScanResult(
-                    [],
-                    exported_glyphs,
-                    exported_icons,
-                    failure=f"Row {row_index} has an arrow that does not match a saved sample.",
-                )
+                ignored += 1
+                continue
             directions.append(direction)
+        if not directions:
+            continue
         code = tuple(directions)
         chosen = _catalog_match(code, icon, memory, pool)
         if chosen is None:
-            return ScanResult(
-                [],
-                exported_glyphs,
-                exported_icons,
-                failure=f"Row {row_index} did not match a stratagem.",
-            )
+            continue
         if icon is not None:
             memory.remember_icon(chosen.name, icon)
         key = chosen.name.casefold()
@@ -240,9 +239,16 @@ def read_loadout(
         seen.add(key)
         entries.append(LoadoutEntry(chosen.name, code, "screen"))
     exported_glyphs, exported_icons = memory.export()
+    note = _IGNORED_NOTE if ignored else ""
     if not entries:
-        return ScanResult([], exported_glyphs, exported_icons, failure="No arrow glyphs in the calibrated region.")
-    return ScanResult(entries, exported_glyphs, exported_icons, reader="samples")
+        if not saw_row:
+            failure = "No arrow glyphs in the calibrated region."
+        else:
+            failure = "No stratagem code matched the catalog."
+            if note:
+                failure = f"{note} {failure}"
+        return ScanResult([], exported_glyphs, exported_icons, failure=failure)
+    return ScanResult(entries, exported_glyphs, exported_icons, reader="samples", note=note)
 
 
 def arrow_preview(

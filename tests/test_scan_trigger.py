@@ -123,7 +123,7 @@ def test_an_empty_scan_keeps_the_saved_loadout(tmp_path, monkeypatch) -> None:
         app.root.update()
         app.present(0, 0, dry_run=True)
         assert [entry.name for entry in app.overlay.entries] == ["Reinforce", "Resupply"]
-        assert "confidence threshold" in app.overlay.notice
+        assert "confidence threshold" not in app.overlay.notice
         assert "Name recognition returned no text" in app.settings.status.get()
     finally:
         app.root.destroy()

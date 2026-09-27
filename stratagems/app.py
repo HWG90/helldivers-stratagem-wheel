@@ -51,7 +51,6 @@ class App:
         self._learn_window: LearnWindow | None = None
         self._cache: list[LoadoutEntry] = []
         self._cache_notice = ""
-        self._scan_failure = ""
         self._capture_cb: object = None
         self._capture_ready = False
         self._send_lock = threading.Lock()
@@ -255,8 +254,6 @@ class App:
             return entries, notice
         if self._cache:
             return _wheel_entries(self._cache), self._cache_notice
-        if self._scan_failure:
-            return _standing_entries(), self._scan_failure
         return _standing_entries(), _STANDING_NOTICE
 
     def _apply_scan(
@@ -275,8 +272,8 @@ class App:
             self.settings.set_status(message)
             self.settings.append_log(f"Scan failed: {message}")
             if self.overlay.visible and not self._cache and not self.config.manual_override:
-                standing, _notice = self._immediate_state()
-                self.overlay.set_state(standing, message.upper(), display_bind(self.config.radial_bind))
+                standing, notice = self._immediate_state()
+                self.overlay.set_state(standing, notice, display_bind(self.config.radial_bind))
             return
         entries = list(result.entries)
         if not entries:
@@ -287,14 +284,12 @@ class App:
                 message = f"{reason} The last mission loadout is unchanged."
             else:
                 message = reason
-                self._scan_failure = reason
                 if self.overlay.visible and not self.config.manual_override:
                     standing, notice = self._immediate_state()
                     self.overlay.set_state(standing, notice, display_bind(self.config.radial_bind))
             self.settings.set_status(message)
             self.settings.append_log(message)
             return
-        self._scan_failure = ""
         self.config.glyph_lut = dict(result.glyph_lut)
         self.config.icon_lut = dict(result.icon_lut)
         save_config(self.config)
@@ -305,10 +300,15 @@ class App:
         shown = _wheel_entries(entries)
         if self.overlay.visible and not self.config.manual_override:
             self.overlay.set_state(shown, notice, display_bind(self.config.radial_bind))
-        names = ", ".join(entry.name for entry in capped) or "none"
+        names = ", ".join(entry.name for entry in entries) or "none"
         noun = "stratagem" if total == 1 else "stratagems"
-        self.settings.set_status(f"Scan found {total} {noun}.")
+        status = f"Scan found {total} {noun}."
+        if result.note:
+            status = f"{status} {result.note}"
+        self.settings.set_status(status)
         self.settings.append_log(f"Scan ({total}): {names}")
+        if result.note:
+            self.settings.append_log(result.note)
 
     def _confirm_current(self) -> None:
         if not self.overlay.visible:
