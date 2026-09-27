@@ -130,14 +130,14 @@ fi
 TESS_RAW="$CACHE/tesseract-extract"
 rm -rf "$TESS_RAW"
 mkdir -p "$TESS_RAW"
-# Match either slash. 7z lists NSIS paths with backslashes, and a
-# forward-slash include filter can skip tessdata/eng.traineddata.
+# 7-Zip matches these NSIS paths with forward slashes. A leading
+# wildcard does not match tessdata/eng.traineddata and still exits 0.
 7z x -y -o"$TESS_RAW" "$TESS_EXE" \
   tesseract.exe \
   '*.dll' \
-  '*eng.traineddata' \
-  '*eng.user-words' \
-  '*eng.user-patterns' \
+  'tessdata/eng.traineddata' \
+  'tessdata/eng.user-words' \
+  'tessdata/eng.user-patterns' \
   >/dev/null
 
 rm -rf "$PAYLOAD/tesseract"
