@@ -114,7 +114,14 @@ def test_addon_uses_the_loader_log_and_reads_player_state() -> None:
     assert "0x348e8f8" in source
     assert "0x37cb600" in source
     assert "0x33266a0" in source
-    assert "0x33266b0" in source
+    assert "0x3326468" in source
+    assert "0x347cf18" in source
+    assert "0x1D0" in source
+    assert "686968" in source
+    assert "left ctrl" in source
+    assert "GetAsyncKeyState" in source
+    assert "0xA2" in source
+    assert "0x33266b0" not in source
     assert "GetModuleHandleA" in source
     assert "ReadProcessMemory" in source
     assert "register_binding" in source
@@ -248,7 +255,10 @@ assert(#settings == 80280 and kind == 149, 'settings image does not match the st
 local table_parts = {}
 for slot = 0, 149 do table_parts[slot + 1] = u64s(table_slots[slot] or 0) end
 local settings_table = table.concat(table_parts)
-local player = overlay(overlay(string.rep('\0', 0x100), 0x84, u32s(1) .. u32s(1)), 0xe8, u64s(ENTITY))
+local OWNER = 0x50000000
+local DMAP = 0x51000000
+local CTRL_ID = 41
+local player = string.rep('\0', 0x440)
 local entity = overlay(string.rep('\0', 24), 20, '\1')
 local regions = {
     {addr = GAME + 0x348e8f8, bytes = u64s(BUFFER)},
@@ -258,6 +268,7 @@ local regions = {
     {addr = PM, bytes = player},
     {addr = ENTITY, bytes = entity},
 }
+local key_down = false
 local function read_region(addr, size)
     for index = #regions, 1, -1 do
         local region = regions[index]
@@ -268,45 +279,76 @@ local function read_region(addr, size)
     end
     return nil
 end
-local function use_rows(kinds, text, mission_type)
-    if mission_type == nil then mission_type = 1 end
+local function pointer_of(bytes, pointer_offset)
+    pointer_offset = pointer_offset or 0
+    local packed = bytes:sub(pointer_offset + 1, pointer_offset + 8)
+    if #packed < 8 then return nil end
+    local value = 0
+    for index = 8, 1, -1 do value = value * 256 + packed:byte(index) end
+    if value < 0x10000 then return nil end
+    return value
+end
+local function install_reader()
+    _G.EquippedStratagemsReader = {
+        module = function(name) assert(name == 'game.dll'); return GAME end,
+        read = read_region,
+        pointer = pointer_of,
+        key_down = function(vk)
+            assert(vk == 0xA2 or vk == 0xA3 or vk == 0x11)
+            return key_down
+        end,
+    }
+end
+local function put_region(addr, bytes)
+    regions[#regions + 1] = {addr = addr, bytes = bytes}
+end
+-- Thrown-ball rows. The log must not pick these up.
+local thrown = overlay(overlay(string.rep('\0', 0x80), 0x34, u32s(1)), 0x78, u64s(ROWS))
+local thrown_row = overlay(string.rep('\0', 64), 12, u32s(5))
+put_region(GAME + 0x33266b0, u64s(SM))
+put_region(SM, thrown)
+put_region(ROWS, thrown_row)
+local function use_slots(kinds, mission_type, menu, action)
     local mode = string.rep('\0', 0x44)
     if mission_type > 0 then
         mode = overlay(mode, 8, u32s(1))
         mode = overlay(mode, 0x40, u32s(mission_type))
     end
-    local rows = {}
-    for _, row_kind in ipairs(kinds) do
-        local row = string.rep('\0', 64)
-        row = overlay(row, 12, u32s(row_kind))
-        if text then row = overlay(row, 16, text .. '\0') end
-        rows[#rows + 1] = row
+    local slots = string.rep('\0', 0x440)
+    local at = 0x1D0
+    for _, kind in ipairs(kinds) do
+        slots = overlay(slots, at, u32s(kind))
+        at = at + 4
     end
-    local row_bytes = table.concat(rows)
-    local manager = overlay(overlay(string.rep('\0', 0x80), 0x34, u32s(#kinds)), 0x78, u64s(ROWS))
-    regions[#regions + 1] = {addr = GAME + 0x33266a0, bytes = u64s(MODE)}
-    regions[#regions + 1] = {addr = MODE, bytes = mode}
-    regions[#regions + 1] = {addr = GAME + 0x33266b0, bytes = u64s(SM)}
-    regions[#regions + 1] = {addr = SM, bytes = manager}
-    regions[#regions + 1] = {addr = ROWS, bytes = row_bytes}
-    _G.EquippedStratagemsReader = {
-        module = function(name) assert(name == 'game.dll'); return GAME end,
-        read = read_region,
-        pointer = function(bytes, pointer_offset)
-            pointer_offset = pointer_offset or 0
-            local packed = bytes:sub(pointer_offset + 1, pointer_offset + 8)
-            if #packed < 8 then return nil end
-            local value = 0
-            for index = 8, 1, -1 do value = value * 256 + packed:byte(index) end
-            if value < 0x10000 then return nil end
-            return value
-        end,
-    }
+    put_region(GAME + 0x33266a0, u64s(MODE))
+    put_region(MODE, mode)
+    put_region(PM, slots)
+    key_down = menu == 'key'
+    local owner = string.rep('\0', 687000)
+    if action then
+        owner = overlay(owner, 686968, u64s(DMAP))
+        owner = overlay(owner, 686976, u32s(256))
+        local mapping = string.char(0x43, 0xff, 0, 0, CTRL_ID, 0, 0, 0) .. u32s(2) .. string.rep('\0', 8)
+        local record = u32s(65536 + 3) .. u32s(1) .. mapping .. string.rep('\0', 328 - 8 - #mapping)
+        put_region(DMAP, record .. string.rep('\0', 256 * 328 - #record))
+        local state_at = 808 + 32 * (97 + 3)
+        owner = overlay(owner, state_at, menu == 'action' and '\1' or '\0')
+        put_region(GAME + 0x347cf18, u64s(OWNER))
+        put_region(OWNER, owner)
+        _G.stingray = {Keyboard = {button_id = function(name)
+            if name == 'left ctrl' then return CTRL_ID end
+            return nil
+        end}}
+    else
+        _G.stingray = nil
+        put_region(GAME + 0x347cf18, u64s(0))
+    end
+    install_reader()
 end
 update(0, 'marker')
 assert(forwarded == 'marker')
 assert(calls == 1)
-assert(bodies[#bodies] == '# loadouts=no\n# game.dll=no\n# rows=unread\n')
+assert(bodies[#bodies] == '# loadouts=no\n# game.dll=no\n# menu=closed\n# slots=unread\n')
 _G.EquippedStratagemsReader = {
     module = function() return nil end,
     read = function() return nil end,
@@ -314,19 +356,22 @@ _G.EquippedStratagemsReader = {
 }
 update(0.5, 'unreadable')
 assert(calls == 1)
-use_rows({1, 2}, nil, 0)
+use_slots({1, 2}, 0, 'key', false)
 update(0.5, 'ship-menu')
-assert(bodies[#bodies] == '# loadouts=no\n# game.dll=yes\n# rows=2\n')
-use_rows({3}, 'not a stratagem', 1)
-update(0.5, 'unknown-row')
-assert(bodies[#bodies] == '# loadouts=no\n# game.dll=yes\n# rows=1\n')
-use_rows({1, 2}, nil, 1)
-update(0.5, 'equipped-rows')
+assert(bodies[#bodies] == '# loadouts=no\n# game.dll=yes\n# menu=open\n# slots=2\n')
+assert(not bodies[#bodies]:find('Eagle', 1, true))
+use_slots({3}, 1, 'key', false)
+update(0.5, 'unknown-slot')
+assert(bodies[#bodies] == '# loadouts=no\n# game.dll=yes\n# menu=open\n# slots=unread\n')
+use_slots({1, 2}, 1, 'key', false)
+update(0.5, 'menu-open')
 assert(bodies[#bodies] == 'Eagle 500kg Bomb\nAC-8 Autocannon\n')
 local after_first = calls
-update(0.5, 'same')
+key_down = false
+update(0.5, 'menu-closed')
 assert(calls == after_first)
-use_rows({3}, 'still not real', 1)
+assert(bodies[#bodies] == 'Eagle 500kg Bomb\nAC-8 Autocannon\n')
+use_slots({3}, 1, 'key', false)
 update(0.5, 'keep')
 assert(calls == after_first)
 assert(bodies[#bodies] == 'Eagle 500kg Bomb\nAC-8 Autocannon\n')
@@ -358,14 +403,22 @@ _G.ModBindingsMenu = {
 update(0.1, 'bind-register')
 assert(registered_label == 'Send Strategems')
 package.loaded['mods/codex/loadouts'] = nil
-use_rows({5, 1}, nil, 1)
+use_slots({5, 1}, 1, 'action', true)
 down = true
 local before_binding = calls
 update(0.1, 'bind-fire')
 assert(calls > before_binding)
 assert(bodies[#bodies] == 'Resupply\nEagle 500kg Bomb\n')
 down = false
+key_down = false
 update(0.1, 'bind-up')
+use_slots({1, 2}, 1, 'closed', true)
+update(0.1, 'action-up')
+use_slots({1, 2}, 1, 'action', true)
+local before_action = calls
+update(0.1, 'action-down')
+assert(calls > before_action)
+assert(bodies[#bodies] == 'Eagle 500kg Bomb\nAC-8 Autocannon\n')
 local chained = update
 dofile('mods/EquippedStratagems/EquippedStratagems.lua')
 assert(update == chained)

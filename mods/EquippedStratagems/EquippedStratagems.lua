@@ -6,16 +6,31 @@
 -- code, signature-scan, or hide itself.
 --
 -- The first update always creates EquippedStratagems.log. Until catalog
--- names are known the file is three status lines (a leading #, which the
--- wheel ignores). Names replace that status, one catalog name per line.
+-- names are known the file is status lines (a leading #, which the wheel
+-- ignores). Names replace that status, one catalog name per line.
 -- mods/codex/loadouts is a compiled patch, so it is only reported, never
--- called. Names come from the in-mission stratagem rows:
---   game.dll base is tonumber(GetModuleHandleA('game.dll')), then
---   ReadProcessMemory of a const void* (ModBindingsMenu / ClickableScrollbars).
---   Mission mode *(game+0x33266a0): +8 nonzero and +0x40 in 1..7
---   (ShallowWaterDiving / spawn_data). Ship menu is not the loadout.
---   StratagemInfo *(game+0x348e8f8), table game+0x37cb600 (navigation_patch).
---   Rows *(game+0x33266b0), count +0x34, data +0x78, stride 64, kind +12.
+-- called.
+--
+-- The in-game stratagem menu (default hold Left Ctrl) is an input action,
+-- not a scancode. ModBindingsMenu's input owner is *(game+0x347cf18).
+-- Shipped defaults are the 256 records at owner+686968. A keyboard button
+-- mapping has device nibble 3 and button-input nibble 4; the Stingray key
+-- id is byte 4. Left Ctrl's id comes from stingray.Keyboard.button_id
+-- ("left ctrl", "lctrl", "left control"). Hold mappings (trigger u32 2 at
+-- mapping+8) win. The menu is open while that action's state byte at
+-- owner+808+32*(97*group+action) is nonzero, so a rebound or a controller
+-- still counts. If that action cannot be resolved, GetAsyncKeyState of
+-- VK_LCONTROL (0xA2), VK_RCONTROL (0xA3), or VK_CONTROL (0x11) is the
+-- fallback, the same call GalacticMenuHotkey uses.
+--
+-- Names are the equipped slots the menu shows, read only in mission mode
+-- 1..7 (*(game+0x33266a0), ShallowWaterDiving / spawn_data). They are the
+-- packed StratagemInfo kind ids at local player+0x1D0 (stride 4), on the
+-- player block *(game+0x3326468) that those mods already read. The thrown
+-- ball list at automatic_anchor_manager is not this loadout. StratagemInfo
+-- names are *(game+0x348e8f8), table game+0x37cb600 (navigation_patch).
+-- game.dll is tonumber(GetModuleHandleA('game.dll')); each read is
+-- ReadProcessMemory of a const void*.
 
 local prior = rawget(_G, 'EquippedStratagems')
 if type(prior) == 'table' and prior.mod == 'EquippedStratagems' then return end
@@ -29,11 +44,25 @@ local POLL_SECONDS = 0.5
 local SETTINGS_RVA = 0x348e8f8
 local TABLE_RVA = 0x37cb600
 local MISSION_RVA = 0x33266a0
-local STRATAGEM_RVA = 0x33266b0
+local PLAYER_RVA = 0x3326468
+local INPUT_OWNER_RVA = 0x347cf18
 local SETTINGS_SIZE = 80280
 local RECORD_SIZE = 400
-local ROW_STRIDE = 64
 local MAX_EQUIPPED = 16
+local SLOT_OFFSET = 0x1D0
+local SLOT_STRIDE = 4
+local DEFAULTS_MAP = 686968
+local ACTION_STATE_OFFSET = 808
+local ACTION_STATE_STRIDE = 32
+local BINDING_RECORD = 328
+local MAPPING_SIZE = 20
+local HOLD_TRIGGER = 2
+local KEYBOARD_DEVICE = 3
+local BUTTON_INPUT = 4
+local VK_LCONTROL = 0xA2
+local VK_RCONTROL = 0xA3
+local VK_CONTROL = 0x11
+local CTRL_BUTTON_NAMES = {'left ctrl', 'lctrl', 'left control'}
 
 local CATALOG = {
     ["40 k meltagun"] = "40-K Meltagun",
@@ -237,6 +266,9 @@ local have_names = false
 local elapsed = POLL_SECONDS
 local binding_registered = false
 local binding_down = false
+local menu_down = false
+local cached_owner = nil
+local cached_actions = nil
 
 local function fold(value)
     local folded = value:lower()
@@ -362,8 +394,10 @@ local function windows_reader()
         void *GetModuleHandleA(const char *name);
         void *GetCurrentProcess(void);
         int ReadProcessMemory(void *process, const void *address, void *buffer, size_t size, size_t *read);
+        unsigned short GetAsyncKeyState(int key);
     ]])
     local kernel = ffi.load('kernel32')
+    local user32_ok, user32 = pcall(ffi.load, 'user32')
     local process = kernel.GetCurrentProcess()
     local api = {}
     function api.module(name)
@@ -391,6 +425,13 @@ local function windows_reader()
         local address = tonumber(value[0])
         if not usable_address(address) then return nil end
         return address
+    end
+    function api.key_down(vk)
+        if not user32_ok or type(vk) ~= 'number' then return false end
+        local value = tonumber(user32.GetAsyncKeyState(vk))
+        if not value then return false end
+        if value < 0 then value = value + 65536 end
+        return value >= 0x8000
     end
     return api
 end
@@ -460,55 +501,138 @@ local function mission_type(api, game)
     return u32(bytes, 0x40)
 end
 
-local function row_count(api, game)
-    local manager = api.pointer(api.read(game + STRATAGEM_RVA, 8))
-    if not usable_address(manager) then return nil, nil end
-    local header = api.read(manager, 0x80)
-    if type(header) ~= 'string' or #header ~= 0x80 then return nil, nil end
-    local count = u32(header, 0x34)
-    if not count or count > 512 then return nil, nil end
-    if count == 0 then return 0, '' end
-    local data = api.pointer(header, 0x78)
-    if not usable_address(data) then return count, nil end
-    local rows = api.read(data, count * ROW_STRIDE)
-    if type(rows) ~= 'string' or #rows ~= count * ROW_STRIDE then return count, nil end
-    return count, rows
-end
-
-local function names_from_rows(rows, count, by_kind)
+-- Packed StratagemInfo kinds the open menu lists. A 0 or 0xFFFFFFFF ends
+-- the list. A value that is not a catalog kind rejects the whole vector.
+local function names_from_slots(player, by_kind)
     local names, seen = {}, {}
-    for index = 0, count - 1 do
-        local base = index * ROW_STRIDE
-        local name = by_kind[u32(rows, base + 12)]
-        if not name then
-            name = best_catalog_name(rows:sub(base + 1, base + ROW_STRIDE))
+    for index = 0, MAX_EQUIPPED - 1 do
+        local kind = u32(player, SLOT_OFFSET + index * SLOT_STRIDE)
+        if not kind or kind == 0 or kind == 0xFFFFFFFF then
+            if #names == 0 then return nil, 0 end
+            return names, #names
         end
-        if name and not seen[name] then
+        if kind < 1 or kind > 149 then return nil, nil end
+        local name = by_kind[kind]
+        if not name then return nil, nil end
+        if not seen[name] then
             seen[name] = true
             names[#names + 1] = name
         end
     end
-    if #names == 0 then return nil end
-    return names
+    if #names == 0 then return nil, nil end
+    return names, #names
+end
+
+local function ctrl_button_ids()
+    local engine = rawget(_G, 'stingray')
+    local keyboard = type(engine) == 'table' and engine.Keyboard or nil
+    local button_id = type(keyboard) == 'table' and keyboard.button_id or nil
+    if type(button_id) ~= 'function' then return nil end
+    local ids = {}
+    for _, name in ipairs(CTRL_BUTTON_NAMES) do
+        local ok, id = pcall(button_id, name)
+        local numeric = ok and tonumber(id) or nil
+        if numeric and numeric >= 0 and numeric <= 255 and numeric % 1 == 0 then
+            ids[numeric] = true
+        end
+    end
+    if next(ids) == nil then return nil end
+    return ids
+end
+
+local function fallback_ctrl(reader)
+    if type(reader) ~= 'table' or type(reader.key_down) ~= 'function' then return false end
+    for _, vk in ipairs({VK_LCONTROL, VK_RCONTROL, VK_CONTROL}) do
+        local ok, down = pcall(reader.key_down, vk)
+        if ok and down then return true end
+    end
+    return false
+end
+
+-- Returns the input owner and the actions whose shipped keyboard default is
+-- Left Ctrl. Hold actions are preferred. nil actions means the defaults map
+-- was readable but Left Ctrl was not on it.
+local function menu_actions(reader, game)
+    local ids = ctrl_button_ids()
+    if not ids then return nil, nil end
+    local owner = reader.pointer(reader.read(game + INPUT_OWNER_RVA, 8))
+    if not usable_address(owner) then return nil, nil end
+    if cached_actions and cached_owner == owner then return owner, cached_actions end
+    local capacity = u32(reader.read(owner + DEFAULTS_MAP + 8, 4) or '', 0)
+    if capacity ~= 256 then return nil, nil end
+    local map = reader.pointer(reader.read(owner + DEFAULTS_MAP, 8))
+    if not usable_address(map) then return nil, nil end
+    local blob = reader.read(map, 256 * BINDING_RECORD)
+    if type(blob) ~= 'string' or #blob ~= 256 * BINDING_RECORD then return nil, nil end
+    local hold, other = {}, {}
+    for index = 0, 255 do
+        local base = index * BINDING_RECORD
+        local code = u32(blob, base)
+        local count = u32(blob, base + 4)
+        if code and count and count > 0 and count <= 16 then
+            local group = math.floor(code / 65536)
+            local action = code % 65536
+            if group < 64 and action < 97 then
+                for mapping_index = 0, count - 1 do
+                    local at = base + 8 + mapping_index * MAPPING_SIZE
+                    local first = blob:byte(at + 1)
+                    local key = blob:byte(at + 5)
+                    if first and key and first % 16 == KEYBOARD_DEVICE
+                        and math.floor(first / 16) % 16 == BUTTON_INPUT and ids[key] then
+                        local entry = {group = group, action = action}
+                        if u32(blob, at + 8) == HOLD_TRIGGER then
+                            hold[#hold + 1] = entry
+                        else
+                            other[#other + 1] = entry
+                        end
+                    end
+                end
+            end
+        end
+    end
+    local chosen = #hold > 0 and hold or (#other > 0 and other or nil)
+    if not chosen then return owner, nil end
+    cached_owner, cached_actions = owner, chosen
+    return owner, chosen
+end
+
+local function action_down(reader, owner, entry)
+    local index = entry.group * 97 + entry.action
+    local byte = reader.read(owner + ACTION_STATE_OFFSET + ACTION_STATE_STRIDE * index, 1)
+    return type(byte) == 'string' and byte ~= '\0'
+end
+
+local function stratagem_menu_open(reader, game)
+    local owner, actions = menu_actions(reader, game)
+    if actions then
+        for _, entry in ipairs(actions) do
+            if action_down(reader, owner, entry) then return true end
+        end
+        return false
+    end
+    return fallback_ctrl(reader)
 end
 
 local function probe_equipped()
-    local probe = {loadouts = loadouts_usable(), game = false, rows = nil, names = nil}
+    local probe = {loadouts = loadouts_usable(), game = false, menu = false, slots = nil, names = nil}
     pcall(function()
-        local api = windows_reader()
-        if type(api) ~= 'table' or type(api.module) ~= 'function' then return end
-        local game = api.module('game.dll')
+        local reader = windows_reader()
+        if type(reader) ~= 'table' or type(reader.module) ~= 'function' then return end
+        local game = reader.module('game.dll')
         if not usable_address(game) then return end
         probe.game = true
-        local mission = mission_type(api, game)
-        local count, rows = row_count(api, game)
-        probe.rows = count
-        -- Ship menu rows are not the equipped loadout. spawn_data reads this
-        -- list only after mission mode is 1..7.
+        probe.menu = stratagem_menu_open(reader, game)
+        local mission = mission_type(reader, game)
+        local player = reader.pointer(reader.read(game + PLAYER_RVA, 8))
+        if not usable_address(player) then return end
+        local bytes = reader.read(player, 0x440)
+        if type(bytes) ~= 'string' or #bytes ~= 0x440 then return end
+        local by_kind = stratagem_names(reader, game) or {}
+        local names, count = names_from_slots(bytes, by_kind)
+        probe.slots = count
+        -- Ship menu slots are not the mission loadout.
         if not mission or mission < 1 or mission > 7 then return end
-        if not count or count < 1 or count > MAX_EQUIPPED or type(rows) ~= 'string' then return end
-        local by_kind = stratagem_names(api, game) or {}
-        probe.names = names_from_rows(rows, count, by_kind)
+        probe.names = names
     end)
     return probe
 end
@@ -535,15 +659,16 @@ end
 
 local function write_status(probe)
     if have_names then return end
-    local rows = probe.rows == nil and 'unread' or tostring(probe.rows)
+    local slots = probe.slots == nil and 'unread' or tostring(probe.slots)
     write_body('# loadouts=' .. (probe.loadouts and 'yes' or 'no')
         .. '\n# game.dll=' .. (probe.game and 'yes' or 'no')
-        .. '\n# rows=' .. rows)
+        .. '\n# menu=' .. (probe.menu and 'open' or 'closed')
+        .. '\n# slots=' .. slots)
 end
 
-local function flush_loadout()
+local function flush_loadout(allow_names)
     local probe = probe_equipped()
-    local names = probe.names and canonical(probe.names) or nil
+    local names = allow_names and probe.names and canonical(probe.names) or nil
     if names and #names > 0 then
         api.names = names
         write_names(names)
@@ -578,20 +703,41 @@ local function service_binding()
     local called, down = pcall(menu.is_down, BINDING_ID)
     if not called or down == nil then return end
     if down and not binding_down then
-        flush_loadout()
+        flush_loadout(true)
     end
     binding_down = down
+end
+
+local function menu_is_open()
+    local open = false
+    pcall(function()
+        local reader = windows_reader()
+        if type(reader) ~= 'table' or type(reader.module) ~= 'function' then return end
+        local game = reader.module('game.dll')
+        if not usable_address(game) then return end
+        open = stratagem_menu_open(reader, game)
+    end)
+    return open
+end
+
+local function service_menu()
+    local open = menu_is_open()
+    if open and not menu_down then
+        flush_loadout(true)
+    end
+    menu_down = open
 end
 
 rawset(_G, 'EquippedStratagems', api)
 
 local previous_update = rawget(_G, 'update')
 update = function(dt, ...)
+    service_menu()
     service_binding()
     elapsed = elapsed + (type(dt) == 'number' and dt or 0)
     if elapsed >= POLL_SECONDS then
         elapsed = 0
-        flush_loadout()
+        flush_loadout(menu_down)
     end
     if type(previous_update) == 'function' then return previous_update(dt, ...) end
 end
