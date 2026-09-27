@@ -1,0 +1,416 @@
+"""Wire the terminal, the radial overlay, OCR, and key playback."""
+
+from __future__ import annotations
+
+import argparse
+import threading
+import time
+import tkinter as tk
+from pathlib import Path
+
+from stratagems.binds import display_bind
+from stratagems.catalog import MAX_WHEEL, LoadoutEntry, get, sample_loadout
+from stratagems.config import Config, load_config, save_config
+from stratagems.listen import InputListener
+from stratagems.ocr import OcrError, capture_region, save_bbox, scan_image
+from stratagems.overlay import RadialOverlay
+from stratagems.sender import KeyboardSender
+from stratagems.sequence import execute_plan, format_plan, plan_input
+from stratagems.settings import SettingsHooks, SettingsWindow
+from stratagems.theme import BG
+
+
+class App:
+    def __init__(self, *, demo: bool) -> None:
+        self.demo = demo
+        self.config, self._load_warning = load_config()
+        self._fire_dry = demo
+        self._radial_down = False
+        self._tracking = False
+        self._track_gen = 0
+        self._scan_gen = 0
+        self._cache: list[LoadoutEntry] = []
+        self._cache_notice = ""
+        self._capture_cb: object = None
+        self._capture_ready = False
+        self._send_lock = threading.Lock()
+        self._keyboard: KeyboardSender | None = None
+        self.listener: InputListener | None = None
+
+        self.root = tk.Tk()
+        self.root.title("Stratagem Terminal")
+        self.root.configure(bg=BG)
+        self.root.geometry("860x1000+24+24")
+        self.root.minsize(720, 760)
+        self.settings = SettingsWindow(
+            self.root,
+            self.config,
+            SettingsHooks(
+                on_changed=self._on_changed,
+                on_rescan=self.rescan,
+                on_preview=self.preview,
+                arm_capture=self.arm_capture,
+            ),
+            demo=demo,
+        )
+        self.overlay = RadialOverlay(self.root, on_confirm=self._confirm_current, on_cancel=self._cancel_wheel)
+        self.root.protocol("WM_DELETE_WINDOW", self.root.quit)
+        self._set_initial_status()
+
+    def run(self, dump: Path | None = None) -> None:
+        self._start_listener()
+        if dump is not None:
+            self._dump_dir = dump
+            self.root.after(500, self._dump_screenshots)
+        elif self.demo:
+            self.root.after(200, self._open_demo)
+        try:
+            self.root.mainloop()
+        finally:
+            self._tracking = False
+            self._track_gen += 1
+            if self.listener is not None:
+                self.listener.stop()
+
+    def preview(self) -> None:
+        self._radial_down = False
+        width = self.root.winfo_screenwidth()
+        height = self.root.winfo_screenheight()
+        self.present(min(1320, width - 420), min(460, height // 2), dry_run=True, track=True)
+
+    def rescan(self) -> None:
+        if self.config.manual_override:
+            self.settings.set_status("Manual override is on, so OCR is skipped.")
+            return
+        if self.config.region is None:
+            self.settings.set_status("Calibrate the stratagem list before scanning.")
+            return
+        self.scan()
+
+    def arm_capture(self, callback: object) -> None:
+        self._capture_cb = callback
+        self._capture_ready = False
+        self.root.after(250, self._mark_capture_ready)
+
+    def present(self, x: int, y: int, *, dry_run: bool, track: bool) -> None:
+        self._fire_dry = dry_run
+        entries, notice = self._immediate_state()
+        self.overlay.show(
+            x,
+            y,
+            entries,
+            notice,
+            demo=self.demo,
+            bind_label=display_bind(self.config.radial_bind),
+        )
+        self._track_gen += 1
+        self._tracking = track
+        if track:
+            self._track(self._track_gen)
+        if self.config.auto_scan and not self.config.manual_override and self.config.region is not None:
+            self.scan()
+
+    def scan(self) -> None:
+        region = self.config.region
+        if region is None:
+            return
+        self._scan_gen += 1
+        generation = self._scan_gen
+        self.settings.set_status("Scanning the stratagem list…")
+
+        def work() -> None:
+            try:
+                image = capture_region(region.left, region.top, region.width, region.height)
+                entries = scan_image(image)
+                error = None
+            except (OcrError, OSError) as exc:
+                entries = []
+                error = str(exc)
+            self._later(
+                lambda entries=entries, error=error, generation=generation: self._apply_scan(
+                    generation, entries, error
+                )
+            )
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _open_demo(self) -> None:
+        self.present(1320, 460, dry_run=True, track=True)
+
+    def _dump_screenshots(self) -> None:
+        self._dump_dir.mkdir(parents=True, exist_ok=True)
+        self.present(1320, 460, dry_run=True, track=False)
+        self.overlay.set_highlight(0)
+        self.root.update_idletasks()
+        self.root.update()
+        self.root.after(400, self._capture_dump)
+
+    def _capture_dump(self) -> None:
+        directory = self._dump_dir
+        try:
+            self.overlay.set_highlight(0)
+            self.root.update()
+            _grab(self.overlay.win, directory / "radial-demo.png")
+            self.overlay.hide()
+            self.root.update()
+            _grab(self.root, directory / "settings-window.png")
+            print(f"wrote screenshots to {directory}", flush=True)
+        except Exception as exc:
+            print(f"screenshot failed: {exc}", flush=True)
+        finally:
+            self.root.quit()
+
+    def _immediate_state(self) -> tuple[list[LoadoutEntry], str]:
+        if self.config.manual_override:
+            entries = _pinned(self.config)
+            if not entries:
+                return [], "MANUAL LOADOUT IS EMPTY — PIN STRATAGEMS"
+            notice = "MANUAL LOADOUT"
+            if len(self.config.pinned) > MAX_WHEEL:
+                notice += f" · SHOWING {MAX_WHEEL}"
+            return entries, notice
+        if self.config.region is None:
+            sample = [LoadoutEntry(item.name, item.code, "sample") for item in sample_loadout()]
+            return sample, "NOT CALIBRATED — SAMPLE LOADOUT"
+        if self._cache:
+            return list(self._cache), self._cache_notice
+        if self.config.auto_scan:
+            return [], "SCANNING STRATAGEM LIST…"
+        return [], "AUTO-SCAN OFF — USE THE RESCAN BIND"
+
+    def _apply_scan(self, generation: int, entries: list[LoadoutEntry], error: str | None) -> None:
+        if generation != self._scan_gen:
+            return
+        if error:
+            self.settings.set_status(error)
+            self.settings.append_log(f"Scan failed: {error}")
+            if self.overlay.visible and not self._cache:
+                self.overlay.set_state([], error.upper(), display_bind(self.config.radial_bind))
+            return
+        total = len(entries)
+        capped = entries[:MAX_WHEEL]
+        notice = _scan_notice(capped, total)
+        self._cache = capped
+        self._cache_notice = notice
+        if self.overlay.visible and not self.config.manual_override:
+            self.overlay.set_state(capped, notice, display_bind(self.config.radial_bind))
+        names = ", ".join(entry.name for entry in capped) or "none"
+        noun = "stratagem" if total == 1 else "stratagems"
+        self.settings.set_status(f"Scan found {total} {noun}.")
+        self.settings.append_log(f"Scan ({total}): {names}")
+
+    def _confirm_current(self) -> None:
+        if not self.overlay.visible:
+            return
+        entry = self.overlay.selected()
+        self.overlay.hide()
+        self._tracking = False
+        self._track_gen += 1
+        self._radial_down = False
+        if entry is None:
+            self.settings.set_status("Cancelled.")
+            self.settings.append_log("Cancelled.")
+            return
+        self._fire(entry)
+
+    def _cancel_wheel(self) -> None:
+        self._radial_down = False
+        self._tracking = False
+        self._track_gen += 1
+        if not self.overlay.visible:
+            return
+        self.overlay.hide()
+        self.settings.set_status("Cancelled.")
+
+    def _fire(self, entry: LoadoutEntry) -> None:
+        dry = self._fire_dry
+        steps = plan_input(
+            entry.code,
+            modifier=self.config.modifier,
+            style=self.config.direction_style,
+            start_delay_ms=self.config.start_delay_ms,
+            gap_ms=self.config.gap_ms,
+            tail_ms=self.config.tail_ms,
+            tap_ms=self.config.tap_ms,
+        )
+        text = format_plan(steps, name=entry.name, code=entry.code)
+        self.settings.append_log(text)
+        print(text, flush=True)
+        if dry:
+            self.settings.set_status(f"Dry run: {entry.name}")
+            return
+        sender = self._sender()
+        self.settings.set_status(f"Sending {entry.name}")
+
+        def work() -> None:
+            with self._send_lock:
+                try:
+                    execute_plan(steps, sender, sleep=time.sleep, now=time.perf_counter)
+                except Exception as exc:
+                    self._later(lambda: self.settings.set_status(f"Input failed: {exc}"))
+                    return
+            self._later(lambda: self.settings.set_status(f"Sent {entry.name}"))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _sender(self) -> KeyboardSender:
+        if self._keyboard is None:
+            self._keyboard = KeyboardSender()
+        return self._keyboard
+
+    def _on_changed(self) -> None:
+        path = save_config(self.config)
+        self.settings.set_status(f"Saved {path}")
+        if self.overlay.visible:
+            entries, notice = self._immediate_state()
+            self.overlay.set_state(entries, notice, display_bind(self.config.radial_bind))
+
+    def _press_radial(self, x: int, y: int) -> None:
+        if self._capture_cb is not None or self._radial_down:
+            return
+        self._radial_down = True
+        self.present(x, y, dry_run=self.demo, track=True)
+
+    def _release_radial(self) -> None:
+        if not self._radial_down:
+            return
+        self._radial_down = False
+        self._confirm_current()
+
+    def _on_mouse(self, name: str, pressed: bool, x: int, y: int) -> None:
+        if self._capture_ready and pressed:
+            self._finish_capture(name)
+            return
+        if name == self.config.radial_bind:
+            if pressed:
+                self._press_radial(x, y)
+            else:
+                self._release_radial()
+            return
+        if name == self.config.rescan_bind and pressed:
+            self.rescan()
+
+    def _on_key(self, name: str, pressed: bool) -> None:
+        if self._capture_ready and pressed:
+            self._finish_capture(None if name == "esc" else name)
+            return
+        if name == "esc" and pressed:
+            self._cancel_wheel()
+            return
+        if name == self.config.radial_bind:
+            if pressed:
+                pointer = self.listener.pointer if self.listener is not None else (0, 0)
+                self._press_radial(pointer[0], pointer[1])
+            else:
+                self._release_radial()
+            return
+        if name == self.config.rescan_bind and pressed:
+            self.rescan()
+
+    def _finish_capture(self, name: str | None) -> None:
+        callback = self._capture_cb
+        self._capture_cb = None
+        self._capture_ready = False
+        self._radial_down = False
+        if callable(callback):
+            callback(name)
+
+    def _mark_capture_ready(self) -> None:
+        if self._capture_cb is not None:
+            self._capture_ready = True
+            self.settings.set_status("Listening for the new bind. Escape cancels.")
+
+    def _track(self, generation: int) -> None:
+        if generation != self._track_gen or not self._tracking or not self.overlay.visible:
+            return
+        x, y = self.root.winfo_pointerxy()
+        self.overlay.pointer(x, y)
+        self.root.after(16, lambda: self._track(generation))
+
+    def _start_listener(self) -> None:
+        try:
+            self.listener = InputListener(self._from_mouse, self._from_key)
+            self.listener.start()
+        except Exception as exc:
+            self.listener = None
+            self.settings.set_status(
+                f"Global input hook unavailable ({exc}). Use Preview wheel; demo clicks still work."
+            )
+
+    def _from_mouse(self, name: str, pressed: bool, x: int, y: int) -> None:
+        self._later(lambda: self._on_mouse(name, pressed, x, y))
+
+    def _from_key(self, name: str, pressed: bool) -> None:
+        self._later(lambda: self._on_key(name, pressed))
+
+    def _later(self, callback: object) -> None:
+        try:
+            self.root.after(0, callback)
+        except tk.TclError:
+            return
+
+    def _set_initial_status(self) -> None:
+        if self._load_warning:
+            self.settings.set_status(self._load_warning)
+            return
+        if self.demo:
+            self.settings.set_status(
+                "Demo mode. Sample loadout is on the wheel. Confirming a wedge logs the keys and does not send them."
+            )
+            return
+        self.settings.set_status("Hold Mouse3 to open the wheel. Mouse4 rescans. Escape cancels.")
+
+
+def _pinned(config: Config) -> list[LoadoutEntry]:
+    entries: list[LoadoutEntry] = []
+    for name in config.pinned:
+        item = get(name)
+        if item is None:
+            continue
+        entries.append(LoadoutEntry(item.name, item.code, "manual"))
+        if len(entries) == MAX_WHEEL:
+            break
+    return entries
+
+
+def _scan_notice(entries: list[LoadoutEntry], total: int) -> str:
+    if total == 0:
+        return "NO STRATAGEMS RECOGNIZED"
+    sources = {entry.code_source for entry in entries}
+    if sources == {"screen"}:
+        notice = "SCANNED · ON-SCREEN CODES"
+    elif "screen" in sources:
+        notice = "SCANNED · ON-SCREEN CODES WHERE READ"
+    else:
+        notice = "SCANNED · TABLE CODES"
+    if total > MAX_WHEEL:
+        notice += f" · SHOWING {MAX_WHEEL} OF {total}"
+    return notice
+
+
+def _grab(widget: tk.Misc, path: Path) -> None:
+    widget.update_idletasks()
+    left = int(widget.winfo_rootx())
+    top = int(widget.winfo_rooty())
+    width = int(widget.winfo_width())
+    height = int(widget.winfo_height())
+    if width < 2 or height < 2:
+        raise RuntimeError(f"{path.name} window is not mapped ({width}x{height})")
+    save_bbox(left, top, width, height, path)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="python -m stratagems",
+        description="Helldivers 2 stratagem wheel. Screen capture and ordinary keypresses only.",
+    )
+    parser.add_argument(
+        "--demo",
+        action="store_true",
+        help="Open the sample wheel and log the key sequence instead of sending it",
+    )
+    parser.add_argument("--dump-screenshots", type=Path, help=argparse.SUPPRESS)
+    args = parser.parse_args(argv)
+    demo = bool(args.demo or args.dump_screenshots is not None)
+    App(demo=demo).run(dump=args.dump_screenshots)
+    return 0
