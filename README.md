@@ -8,9 +8,32 @@ It does not attach to the game. There is no process injection, no memory reading
 
 Primary target is Windows, where the game runs. `--demo` and the unit tests run on Linux.
 
-## Install
+## Windows
 
-Python 3.11 or newer.
+Download `HelldiversStratagemWheel.exe` and double-click it. Python does not need to be installed, and neither does Tesseract.
+
+The first launch unpacks a private runtime under `%LOCALAPPDATA%\HelldiversStratagemWheel` and opens Stratagem Terminal in live mode. Hold **Mouse3** to open the wheel. Later launches reuse that folder when the bundled version has not changed.
+
+Tesseract and the English traineddata ship inside the exe. The app finds `tesseract\tesseract.exe` and `tesseract\tessdata\eng.traineddata` next to that runtime on its own.
+
+The file is unsigned. SmartScreen may ask you to confirm it.
+
+Live mode still types real keypresses. The anti-cheat warning at the top applies to this download the same way it applies to a source checkout.
+
+### How the exe was built
+
+`scripts/build_windows_exe.sh` produces it on Linux. PyInstaller cannot cross-compile a Windows binary, so the script uses pynsist and NSIS:
+
+1. pynsist downloads the official Windows embeddable CPython 3.12 (64-bit) and the Windows wheels for the Python dependencies.
+2. That embeddable zip does not include tkinter. The script adds `_tkinter.pyd`, `tcl86t.dll`, `tk86t.dll`, and the `tkinter` package from the matching official Windows build (`tcltk.msi` on python.org).
+3. It unpacks the UB Mannheim Tesseract 5.4 64-bit installer and keeps `tesseract.exe`, the DLLs it imports, and `tessdata/eng.traineddata`.
+4. NSIS (`makensis`) packs those folders into one PE executable. Double-clicking it extracts the runtime and starts `pythonw` on the launcher script. That script calls `stratagems.app:main` with no `--demo` flag, so the terminal listens for the radial bind.
+
+The executable is a build product. It is not committed.
+
+## Install from source
+
+Python 3.11 or newer. The Windows exe above is the way to run it without installing Python. A source checkout is for development and for the Linux demo.
 
 ```bash
 python -m venv .venv

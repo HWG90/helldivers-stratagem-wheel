@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+# Tcl/Tk has to be pointed at the bundled libraries before tkinter loads.
+# The Windows embeddable interpreter does not discover them on its own.
+from stratagems.runtime import configure_bundled_runtime
+
+configure_bundled_runtime()
+
 import argparse
 import threading
 import time

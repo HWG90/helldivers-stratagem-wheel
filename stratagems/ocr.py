@@ -11,6 +11,7 @@ from pytesseract import TesseractError, TesseractNotFoundError
 
 from stratagems.catalog import LoadoutEntry
 from stratagems.matching import resolve_lines
+from stratagems.runtime import configure_bundled_runtime, tesseract_config
 
 
 class OcrError(Exception):
@@ -66,16 +67,18 @@ def scan_image(image: Image.Image) -> list[LoadoutEntry]:
 
 
 def lines_from_image(image: Image.Image) -> list[str]:
+    configure_bundled_runtime()
     prepared = preprocess(image)
     try:
         data = pytesseract.image_to_data(
             prepared,
             output_type=pytesseract.Output.DICT,
-            config="--psm 6 -l eng",
+            config=tesseract_config(),
         )
     except TesseractNotFoundError as exc:
         raise OcrError(
-            "Tesseract is not installed or not on PATH. Install tesseract-ocr and try the scan again."
+            "Tesseract was not found. The Windows app looks for tesseract\\tesseract.exe "
+            "next to its runtime. A source checkout needs tesseract-ocr on PATH."
         ) from exc
     except TesseractError as exc:
         raise OcrError(f"Tesseract failed: {exc}") from exc
