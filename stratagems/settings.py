@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import threading
 import tkinter as tk
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -39,8 +38,8 @@ from stratagems.widgets import body_label, paint_hazard_border, yellow_button
 
 _PREVIEW_W = 720
 _PREVIEW_H = 280
-_PREVIEW_INTERVAL_MS = 250
 _UNCALIBRATED = "No region calibrated. Drag a rectangle around the stratagem list."
+_IDLE = "Press Scan or the scan bind to capture this region."
 
 
 @dataclass(frozen=True)
@@ -66,15 +65,10 @@ class SettingsWindow:
         self.status = tk.StringVar(value="Ready.")
         self._crop: Image.Image | None = None
         self._preview_photo: ImageTk.PhotoImage | None = None
-        self._persist_after: str | None = None
-        self._preview_after: str | None = None
-        self._capture_gen = 0
-        self._capture_busy = False
         self._body_canvas: tk.Canvas | None = None
 
         self._build()
         self._loading = False
-        self._start_live_preview()
 
     def set_status(self, text: str) -> None:
         self.status.set(text)
@@ -329,7 +323,8 @@ class SettingsWindow:
         self._refresh_region()
         self.hooks.on_changed()
         self.set_status(f"Saved region {region.left}, {region.top} {region.width}×{region.height}.")
-        self._kick_capture()
+        self._crop = None
+        self._show_preview_message(_IDLE)
 
     def _clear_region(self) -> None:
         self.config.region = None
@@ -359,8 +354,9 @@ class SettingsWindow:
             frame,
             "HDR screenshots often come back flat, dark, or blown out. "
             "The preview shows each segmented arrow and the direction the matcher chose. "
-            "It refreshes about four times a second and does not replace the saved mission loadout. "
-            "Auto sets the curve from the crop histogram. Nudge the sliders if a glyph is still soft.",
+            "It updates when you press the scan bind, click Scan or Auto, or release a slider. "
+            "It does not replace the saved mission loadout. "
+            "Auto sets the curve from one crop. Nudge the sliders if a glyph is still soft.",
             self.family,
             fg=DIM,
             size=8,
@@ -420,7 +416,7 @@ class SettingsWindow:
         if self.config.region is None:
             self._show_uncalibrated()
         else:
-            self._show_preview_message("Capturing the calibrated region…")
+            self._show_preview_message(_IDLE)
         ocr = tk.Label(
             frame,
             textvariable=self.hdr_ocr,
@@ -479,7 +475,7 @@ class SettingsWindow:
         header.pack(fill="x")
         tk.Label(header, text=label, bg=BG, fg=WHITE, font=(self.family, 9)).pack(side="left")
         tk.Label(header, textvariable=value_var, bg=BG, fg=YELLOW, font=(self.mono, 9)).pack(side="right")
-        tk.Scale(
+        scale = tk.Scale(
             cell,
             from_=low,
             to=high,
@@ -496,7 +492,10 @@ class SettingsWindow:
             bd=0,
             showvalue=False,
             length=260,
-        ).pack(fill="x")
+        )
+        scale.pack(fill="x")
+        scale.bind("<ButtonRelease-1>", self._finish_hdr_slider)
+        scale.bind("<KeyRelease>", self._finish_hdr_slider)
 
     def _sync_hdr_labels(self) -> None:
         self.exposure_text.set(f"{float(self.exposure_var.get()):+.2f} st")
@@ -529,30 +528,39 @@ class SettingsWindow:
         self._sync_hdr_labels()
         self._refresh_hdr_note()
 
+    def show_capture(self, image: Image.Image) -> None:
+        """Show one captured crop. This does not change the mission loadout."""
+        if self.config.region is None:
+            self._show_uncalibrated()
+            return
+        self._crop = image
+        self._refresh_preview()
+
     def _on_hdr_toggle(self) -> None:
         if self._loading:
             return
         self._push_hdr()
-        self._paint_live_preview()
+        if self._crop is not None:
+            self._refresh_preview()
         self.hooks.on_changed()
 
     def _on_hdr_slider(self, _value: str) -> None:
         if self._loading:
             return
         self._sync_hdr_labels()
-        self._paint_live_preview()
-        self._schedule_persist()
 
-    def _schedule_persist(self) -> None:
-        if self._persist_after is not None:
-            self.root.after_cancel(self._persist_after)
-        self._persist_after = self.root.after(250, self._persist_hdr)
-
-    def _persist_hdr(self) -> None:
-        self._persist_after = None
+    def _finish_hdr_slider(self, _event: object = None) -> None:
         if self._loading:
             return
         self._push_hdr()
+        if self.config.region is None:
+            self._show_uncalibrated()
+        elif self._crop is None:
+            self._grab_crop_now()
+            if self._crop is not None:
+                self._refresh_preview()
+        else:
+            self._refresh_preview()
         self.hooks.on_changed()
 
     def _auto_hdr(self) -> None:
@@ -560,8 +568,7 @@ class SettingsWindow:
             self._show_uncalibrated()
             self.set_status("Calibrate the stratagem list before using Auto.")
             return
-        if self._crop is None:
-            self._grab_crop_now()
+        self._grab_crop_now()
         if self._crop is None:
             return
         curve = auto_curve(self._crop)
@@ -575,75 +582,9 @@ class SettingsWindow:
         finally:
             self._loading = False
         self._push_hdr()
-        self._paint_live_preview()
+        self._refresh_preview()
         self.hooks.on_changed()
         self.set_status("HDR curve set from the crop histogram. Nudge the sliders if a glyph is still soft.")
-
-    def _start_live_preview(self) -> None:
-        self.root.bind("<Destroy>", self._stop_live_preview, add="+")
-        self._schedule_preview_tick()
-
-    def _stop_live_preview(self, event: tk.Event[tk.Misc]) -> None:
-        if event.widget is not self.root:
-            return
-        if self._preview_after is not None:
-            try:
-                self.root.after_cancel(self._preview_after)
-            except tk.TclError:
-                pass
-            self._preview_after = None
-        self._capture_gen += 1
-
-    def _schedule_preview_tick(self) -> None:
-        try:
-            self._preview_after = self.root.after(_PREVIEW_INTERVAL_MS, self._preview_tick)
-        except tk.TclError:
-            self._preview_after = None
-
-    def _preview_tick(self) -> None:
-        self._preview_after = None
-        self._kick_capture()
-        self._schedule_preview_tick()
-
-    def _kick_capture(self) -> None:
-        if self.config.region is None:
-            self._show_uncalibrated()
-            return
-        self._paint_live_preview()
-        if self._capture_busy:
-            return
-        region = self.config.region
-        self._capture_busy = True
-        self._capture_gen += 1
-        generation = self._capture_gen
-        left, top, width, height = region.left, region.top, region.width, region.height
-
-        def work() -> None:
-            try:
-                image = capture_region(left, top, width, height)
-                error = None
-            except (OcrError, OSError) as exc:
-                image = None
-                error = str(exc)
-            try:
-                self.root.after(0, lambda: self._apply_capture(generation, image, error))
-            except tk.TclError:
-                return
-
-        threading.Thread(target=work, daemon=True).start()
-
-    def _apply_capture(self, generation: int, image: Image.Image | None, error: str | None) -> None:
-        self._capture_busy = False
-        if generation != self._capture_gen or self.config.region is None:
-            if self.config.region is None:
-                self._show_uncalibrated()
-            return
-        if error or image is None:
-            self._crop = None
-            self._show_preview_message(error or "Could not capture the screen.")
-            return
-        self._crop = image
-        self._paint_live_preview()
 
     def _grab_crop_now(self) -> None:
         region = self.config.region
@@ -659,7 +600,6 @@ class SettingsWindow:
 
     def _show_uncalibrated(self) -> None:
         self._crop = None
-        self._capture_gen += 1
         self._show_preview_message(_UNCALIBRATED)
 
     def _show_preview_message(self, text: str) -> None:
@@ -667,12 +607,12 @@ class SettingsWindow:
         self.preview_view.configure(image="", text=text, width=52, height=6)
         self.hdr_ocr.set(text)
 
-    def _paint_live_preview(self) -> None:
+    def _refresh_preview(self) -> None:
         if self.config.region is None:
             self._show_uncalibrated()
             return
         if self._crop is None:
-            self._show_preview_message("Capturing the calibrated region…")
+            self._show_preview_message(_IDLE)
             return
         bitmap, summary = arrow_preview(
             self._crop,

@@ -14,6 +14,8 @@ import time
 import tkinter as tk
 from pathlib import Path
 
+from PIL import Image
+
 from stratagems.binds import display_bind
 from stratagems.catalog import MAX_WHEEL, LoadoutEntry, get, sample_loadout
 from stratagems.config import Config, load_config, save_config
@@ -133,6 +135,7 @@ class App:
         self.settings.set_status("Scanning the stratagem list…")
 
         def work() -> None:
+            image: Image.Image | None = None
             try:
                 image = capture_region(region.left, region.top, region.width, region.height)
                 result = scan_image(
@@ -147,8 +150,8 @@ class App:
                 result = None
                 error = str(exc)
             self._later(
-                lambda result=result, error=error, generation=generation: self._apply_scan(
-                    generation, result, error
+                lambda result=result, error=error, generation=generation, image=image: self._apply_scan(
+                    generation, result, error, image
                 )
             )
 
@@ -199,9 +202,17 @@ class App:
             return list(self._cache), self._cache_notice
         return [], "NO MISSION SCAN — PRESS THE SCAN BIND"
 
-    def _apply_scan(self, generation: int, result: ScanResult | None, error: str | None) -> None:
+    def _apply_scan(
+        self,
+        generation: int,
+        result: ScanResult | None,
+        error: str | None,
+        image: Image.Image | None = None,
+    ) -> None:
         if generation != self._scan_gen:
             return
+        if image is not None:
+            self.settings.show_capture(image)
         if error or result is None:
             message = error or "Scan failed."
             self.settings.set_status(message)

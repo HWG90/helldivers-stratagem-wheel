@@ -119,13 +119,13 @@ To read the list from the game:
 1. Open the stratagem menu in Helldivers 2 so the names and arrow codes are on screen.
 2. In Stratagem Terminal, click **CALIBRATE**.
 3. Drag a rectangle around that list, including each name and its arrows. Save.
-4. Leave **Auto-scan** on. The next time you hold the radial bind, that rectangle is captured and read.
+4. Press the scan bind (Mouse4) or click **SCAN**. That reads the rectangle once and stores the loadout for the mission.
 
-**SCAN**, or the scan bind (Mouse4), reads that region once. Opening the wheel does not. The live preview under HDR keeps refreshing so you can see the segmented arrows, and it does not replace the saved loadout.
+**SCAN**, or the scan bind, reads that region once. Opening the wheel does not. The HDR preview uses that same capture, or a new one when you click **AUTO** or release a slider. It does not keep capturing while the window is open, and it does not replace the saved loadout.
 
 ### Windows HDR
 
-An HDR desktop can hand that same rectangle back flat, dark, or blown out. Under **HDR**, next to the region controls, turn on **Adjust captures before reading**. The preview shows each segmented arrow glyph and the direction the matcher chose. The curve, when HDR is on, is applied before that segmentation. The preview refreshes about four times a second, including while you drag a slider. **AUTO** sets exposure, gamma, contrast, and black level from the crop's histogram. Move the sliders if a glyph is still soft. The toggle and the four values are saved in the config file.
+An HDR desktop can hand that same rectangle back flat, dark, or blown out. Under **HDR**, next to the region controls, turn on **Adjust captures before reading**. The preview shows each segmented arrow glyph and the direction the matcher chose. The curve, when HDR is on, is applied before that segmentation. The image updates when you scan, click **AUTO**, or release a slider. It does not refresh on a timer. **AUTO** sets exposure, gamma, contrast, and black level from one crop's histogram. Move the sliders if a glyph is still soft. The toggle and the four values are saved in the config file.
 
 Arrow shapes decide the code. Samples of each direction are stored in the config after a scan and reused on the next one. If two stratagems share a code, an icon patch stored from an earlier recognition breaks the tie. A name is read only when the code still does not identify the row. On Windows that name comes from Windows.Media.Ocr, or from RapidOCR if that API cannot be called. The catalog code is used only when no arrow code was segmented.
 
