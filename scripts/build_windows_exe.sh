@@ -63,16 +63,11 @@ if [[ ! -s "$TCLTK_MSI" ]]; then
     "https://www.python.org/ftp/python/${PY_VERSION}/amd64/tcltk.msi"
 fi
 
-TESS_EXE="$CACHE/tesseract-ocr-w64-setup-5.4.0.20240606.exe"
-if [[ ! -s "$TESS_EXE" ]]; then
-  curl -fL --retry 3 -o "$TESS_EXE" \
-    "https://digi.bib.uni-mannheim.de/tesseract/tesseract-ocr-w64-setup-5.4.0.20240606.exe"
-fi
-
 rm -rf "$WHEELS"
 mkdir -p "$WHEELS"
 # --no-deps: pynput's evdev extra is Linux-only and has no Windows wheel.
-# Windows needs the pure pynput wheel plus six. pytesseract needs packaging.
+# Windows needs the pure pynput wheel plus six. pytesseract stays importable
+# for the Linux name path; the Windows package does not ship tesseract.exe.
 "$PY" -m pip download \
   --dest "$WHEELS" \
   --no-deps \
@@ -154,55 +149,13 @@ if ! grep -q 'import site' "$PTH"; then
   exit 1
 fi
 
-TESS_RAW="$CACHE/tesseract-extract"
-rm -rf "$TESS_RAW"
-mkdir -p "$TESS_RAW"
-# 7-Zip matches these NSIS paths with forward slashes. A leading
-# wildcard does not match tessdata/eng.traineddata and still exits 0.
-7z x -y -o"$TESS_RAW" "$TESS_EXE" \
-  tesseract.exe \
-  '*.dll' \
-  'tessdata/eng.traineddata' \
-  'tessdata/eng.user-words' \
-  'tessdata/eng.user-patterns' \
-  >/dev/null
-
-rm -rf "$PAYLOAD/tesseract"
-mkdir -p "$PAYLOAD/tesseract/tessdata"
-cp -a "$TESS_RAW/tesseract.exe" "$PAYLOAD/tesseract/tesseract.exe"
-cp -a "$TESS_RAW"/*.dll "$PAYLOAD/tesseract/"
-trained="$(find "$TESS_RAW" -type f -name 'eng.traineddata' -print -quit)"
-if [[ -z "$trained" ]]; then
-  echo "UB Mannheim installer did not contain eng.traineddata" >&2
-  exit 1
-fi
-cp -a "$trained" "$PAYLOAD/tesseract/tessdata/eng.traineddata"
-words="$(find "$TESS_RAW" -type f -name 'eng.user-words' -print -quit || true)"
-patterns="$(find "$TESS_RAW" -type f -name 'eng.user-patterns' -print -quit || true)"
-if [[ -n "$words" && -n "$patterns" ]]; then
-  cp -a "$words" "$patterns" "$PAYLOAD/tesseract/tessdata/"
-fi
-# Tesseract's own DLLs load the VC runtime from their directory.
-for runtime_dll in vcruntime140.dll vcruntime140_1.dll; do
-  if [[ -f "$PYDIR/$runtime_dll" && ! -f "$PAYLOAD/tesseract/$runtime_dll" ]]; then
-    cp -a "$PYDIR/$runtime_dll" "$PAYLOAD/tesseract/$runtime_dll"
-  fi
-done
-
-test -f "$PAYLOAD/tesseract/tesseract.exe"
-test -f "$PAYLOAD/tesseract/tessdata/eng.traineddata"
-# A real UB Mannheim eng.traineddata is a few megabytes. A failed 7z
-# extract can leave a tiny stub that still passes test -f.
-trained_bytes="$(wc -c < "$PAYLOAD/tesseract/tessdata/eng.traineddata")"
-if [[ "$trained_bytes" -lt 1000000 ]]; then
-  echo "eng.traineddata is only ${trained_bytes} bytes." >&2
-  exit 1
-fi
-echo "staged payload tesseract/tessdata/eng.traineddata (${trained_bytes} bytes)"
+# Still-image OCR does not use OpenCV's video capture plugin.
+find "$PAYLOAD/pkgs/cv2" -name 'opencv_videoio_ffmpeg*.dll' -delete
 test -f "$PYDIR/pythonw.exe"
 test -f "$PYDIR/Lib/tkinter/__init__.py"
 test -f "$PYDIR/tcl/tcl8.6/init.tcl"
 test -f "$PAYLOAD/pkgs/stratagems/__main__.py"
+test -f "$PAYLOAD/pkgs/rapidocr/models/PP-OCRv6_rec_small.onnx"
 
 "$PY" - "$PAYLOAD" << 'PY'
 import struct
@@ -283,7 +236,6 @@ def check(folder: Path, also_present: set[str] | None = None) -> None:
         print("\n".join(missing), file=sys.stderr)
         raise SystemExit(f"Missing DLLs under {folder}")
 
-check(payload / "tesseract")
 python_dir = payload / "Python"
 check(python_dir)
 dll_dir = python_dir / "DLLs"
@@ -301,14 +253,20 @@ makensis -NOCD \
   -DAPP_VERSION="$APP_VERSION" \
   "$ROOT/packaging/portable.nsi"
 
-if ! 7z l "$OUT" | grep -F 'tesseract/tessdata/eng.traineddata'; then
-  echo "Installer is missing tesseract/tessdata/eng.traineddata" >&2
+if ! 7z l "$OUT" | grep -F 'rapidocr/models/PP-OCRv6_rec_small.onnx'; then
+  echo "Installer is missing the RapidOCR recognition model." >&2
+  exit 1
+fi
+if 7z l "$OUT" | grep -F 'tesseract/tesseract.exe'; then
+  echo "Installer still packs Tesseract. Windows does not use it." >&2
   exit 1
 fi
 file "$OUT"
 ls -l "$OUT"
 media_dir="$(dirname "$MEDIA")"
 if [[ -d "$media_dir" ]]; then
+  # The store rejects a second copy while the previous exe is still there.
+  rm -f "$MEDIA"
   cp -f "$OUT" "$MEDIA"
   file "$MEDIA"
   ls -l "$MEDIA"

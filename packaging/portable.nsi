@@ -50,15 +50,8 @@ Section
     File /r "${PAYLOAD}/Python/*"
     SetOutPath "$INSTDIR\pkgs"
     File /r "${PAYLOAD}/pkgs/*"
-    ; Keep tessdata as its own output directory. UB Mannheim Tesseract 5.4
-    ; loads eng.traineddata from that folder, not from beside tesseract.exe.
-    SetOutPath "$INSTDIR\tesseract"
-    File "${PAYLOAD}/tesseract/tesseract.exe"
-    File "${PAYLOAD}/tesseract/*.dll"
-    SetOutPath "$INSTDIR\tesseract\tessdata"
-    File "${PAYLOAD}/tesseract/tessdata/eng.traineddata"
-    File /nonfatal "${PAYLOAD}/tesseract/tessdata/eng.user-words"
-    File /nonfatal "${PAYLOAD}/tesseract/tessdata/eng.user-patterns"
+    ; Windows name fallback is Windows.Media.Ocr, then RapidOCR. Tesseract
+    ; is not packed into this runtime.
     SetOutPath "$INSTDIR"
     File "${PAYLOAD}/Stratagem_Terminal.launch.pyw"
     WriteINIStr "$INSTDIR\runtime.ini" Runtime Version "${APP_VERSION}"

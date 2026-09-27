@@ -34,8 +34,7 @@ Live mode still types real keypresses. The anti-cheat warning at the top applies
 
 1. pynsist downloads the official Windows embeddable CPython 3.12 (64-bit) and the Windows wheels for the Python dependencies.
 2. That embeddable zip does not include tkinter. The script adds `_tkinter.pyd`, `tcl86t.dll`, `tk86t.dll`, and the `tkinter` package from the matching official Windows build (`tcltk.msi` on python.org).
-3. It unpacks the UB Mannheim Tesseract 5.4 64-bit installer and keeps `tesseract.exe`, the DLLs it imports, and `tessdata/eng.traineddata`.
-4. NSIS (`makensis`) packs those folders into one PE executable. Double-clicking it extracts the runtime and starts `pythonw` on the launcher script. That script calls `stratagems.app:main` with no `--demo` flag, so the terminal listens for the radial bind.
+3. NSIS (`makensis`) packs those folders into one PE executable. Double-clicking it extracts the runtime and starts `pythonw` on the launcher script. That script calls `stratagems.app:main` with no `--demo` flag, so the terminal listens for the radial bind. The package includes RapidOCR and Windows.Media.Ocr. It does not include Tesseract.
 
 The executable is a build product. It is not committed.
 
@@ -54,9 +53,7 @@ Windows:
 pip install -r requirements.txt
 ```
 
-Install [Tesseract OCR](https://github.com/UB-Mannheim/tesseract/wiki) and make sure `tesseract` is on `PATH`.
-
-Linux (demo and tests):
+Linux (demo and tests) still uses Tesseract when a name has to be read:
 
 ```bash
 source .venv/bin/activate
