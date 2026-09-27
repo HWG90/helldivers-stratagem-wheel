@@ -1,8 +1,8 @@
 """Name fallback. Arrow codes are not read here.
 
-On Windows the packaged app calls Windows.Media.Ocr. If that API cannot be
-called, RapidOCR (ONNX Runtime) reads the name. Tesseract is not used on
-Windows. EasyOCR and PaddleOCR are not used.
+On Windows the packaged app calls Windows.Media.Ocr, then RapidOCR. If both
+return nothing and the crop still looks like text, Tesseract reads the name.
+EasyOCR and PaddleOCR are not used.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import io
 import sys
+from dataclasses import dataclass
 
 import pytesseract
 from PIL import Image, ImageOps, ImageStat
@@ -39,17 +40,64 @@ class NameOcrUnavailable(Exception):
     """Windows.Media.Ocr cannot be called in this process."""
 
 
+@dataclass(frozen=True)
+class NameRead:
+    lines: list[str]
+    reader: str
+
+
 _rapid_engine: object | None = None
 
 
 def read_lines(image: Image.Image) -> list[str]:
-    """Read text lines. On Windows this never calls Tesseract."""
+    """Read text lines."""
+    return read_names(image).lines
+
+
+def read_names(image: Image.Image) -> NameRead:
+    """Read text and record which engine produced it."""
     if sys.platform == "win32":
-        try:
-            return _windows_media_lines(image)
-        except NameOcrUnavailable:
-            return _rapidocr_lines(image)
-    return _tesseract_lines(image)
+        return _windows_names(image)
+    lines = _tesseract_lines(image)
+    return NameRead(lines, "tesseract" if lines else "")
+
+
+def _windows_names(image: Image.Image) -> NameRead:
+    try:
+        lines = _windows_media_lines(image)
+    except NameOcrUnavailable:
+        lines = []
+    if lines:
+        return NameRead(lines, "windows.media.ocr")
+    lines = _rapidocr_lines(image)
+    if lines:
+        return NameRead(lines, "rapidocr")
+    if _contains_text(image):
+        lines = _tesseract_lines(image)
+        if lines:
+            return NameRead(lines, "tesseract")
+    return NameRead([], "")
+
+
+def _contains_text(image: Image.Image) -> bool:
+    """True when the crop has enough contrast to be writing, not a flat field."""
+    gray = image.convert("L")
+    if ImageStat.Stat(gray).stddev[0] < 18:
+        return False
+    raw = gray.tobytes()
+    width, height = gray.size
+    if width < 8 or height < 8:
+        return False
+    changes = 0
+    step = max(1, height // 24)
+    for y in range(0, height, step):
+        row = raw[y * width : (y + 1) * width]
+        previous = row[0]
+        for pixel in row:
+            if abs(pixel - previous) > 40:
+                changes += 1
+            previous = pixel
+    return changes >= 12
 
 
 def _windows_media_lines(image: Image.Image) -> list[str]:

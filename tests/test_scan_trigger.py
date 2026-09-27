@@ -93,7 +93,12 @@ def test_an_empty_scan_keeps_the_saved_loadout(tmp_path, monkeypatch) -> None:
 
     def fake_scan_image(*_args: object, **_kwargs: object) -> ScanResult:
         calls.append("scan")
-        return ScanResult([], {}, {})
+        return ScanResult(
+            [],
+            {},
+            {},
+            failure="Arrow glyphs were below the confidence threshold. Name recognition returned no text.",
+        )
 
     monkeypatch.setattr("stratagems.app.scan_image", fake_scan_image)
     blank = lambda *_args, **_kwargs: Image.new("RGB", (8, 8), "black")
@@ -108,8 +113,18 @@ def test_an_empty_scan_keeps_the_saved_loadout(tmp_path, monkeypatch) -> None:
         app.root.update()
         assert calls == ["scan"]
         assert app._cache[0].name == "Reinforce"
+        assert "confidence threshold" in app.settings.status.get()
+        assert "unchanged" in app.settings.status.get()
         assert app.settings._crop is not None
         assert app.settings._crop.size == (8, 8)
+
+        app._cache = []
+        app._on_key("mouse4", True)
+        app.root.update()
+        app.present(0, 0, dry_run=True)
+        assert app.overlay.entries == []
+        assert "confidence threshold" in app.overlay.notice
+        assert "Name recognition returned no text" in app.settings.status.get()
     finally:
         app.root.destroy()
 

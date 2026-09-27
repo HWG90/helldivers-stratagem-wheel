@@ -13,7 +13,7 @@ Primary target is Windows, where the game runs. `--demo` and the unit tests run 
 Double-click `Start.bat` in this folder.
 
 - If `HelldiversStratagemWheel.exe` is beside `Start.bat`, that file starts.
-- Otherwise `Start.bat` creates a virtual environment, installs `requirements.txt`, and runs `python -m stratagems`. Arrow codes are read by shape. On Windows a name, when one is still required, is read by Windows.Media.Ocr or by RapidOCR. Tesseract is not used.
+- Otherwise `Start.bat` creates a virtual environment, installs `requirements.txt`, and runs `python -m stratagems`. A scan reads arrow shapes when they classify, and otherwise reads names with Windows.Media.Ocr, then RapidOCR, then Tesseract.
 - Or download `HelldiversStratagemWheel.exe` from the Windows exe workflow and double-click it. GitHub runs `.github/workflows/windows-exe.yml`. Origin runs `.depot/workflows/windows-exe.yml`.
 
 ## Windows
@@ -22,7 +22,7 @@ Download `HelldiversStratagemWheel.exe` and double-click it. Python does not nee
 
 The first launch unpacks a private runtime under `%LOCALAPPDATA%\HelldiversStratagemWheel` and opens Stratagem Terminal in live mode. Hold **Mouse3** to open the wheel. **Mouse4** scans the list once for the mission. Later launches reuse that folder when the bundled version has not changed.
 
-Arrow codes are matched by shape. When a name still has to be read, the packaged app calls Windows.Media.Ocr. If that API cannot be called, it uses RapidOCR (ONNX). It does not use Tesseract on Windows.
+Arrow codes are matched by shape when the glyphs classify. Otherwise the packaged app reads names with Windows.Media.Ocr, then RapidOCR (ONNX). If both return nothing and the crop still looks like text, it uses the bundled Tesseract and `eng.traineddata`. A scan that finds nothing says why in the terminal. Opening the wheel does not scan.
 
 The file is unsigned. SmartScreen may ask you to confirm it.
 
@@ -34,7 +34,8 @@ Live mode still types real keypresses. The anti-cheat warning at the top applies
 
 1. pynsist downloads the official Windows embeddable CPython 3.12 (64-bit) and the Windows wheels for the Python dependencies.
 2. That embeddable zip does not include tkinter. The script adds `_tkinter.pyd`, `tcl86t.dll`, `tk86t.dll`, and the `tkinter` package from the matching official Windows build (`tcltk.msi` on python.org).
-3. NSIS (`makensis`) packs those folders into one PE executable. Double-clicking it extracts the runtime and starts `pythonw` on the launcher script. That script calls `stratagems.app:main` with no `--demo` flag, so the terminal listens for the radial bind. The package includes RapidOCR and Windows.Media.Ocr. It does not include Tesseract.
+3. It unpacks the UB Mannheim Tesseract 5.4 installer, keeps `tesseract.exe`, the DLLs it imports, and `tessdata/eng.traineddata`, and strips debug data out of those binaries.
+4. NSIS (`makensis`) packs those folders into one PE executable. Double-clicking it extracts the runtime and starts `pythonw` on the launcher script. That script calls `stratagems.app:main` with no `--demo` flag, so the terminal listens for the radial bind.
 
 The executable is a build product. It is not committed.
 
@@ -127,7 +128,7 @@ To read the list from the game:
 
 An HDR desktop can hand that same rectangle back flat, dark, or blown out. Under **HDR**, next to the region controls, turn on **Adjust captures before reading**. The preview shows each segmented arrow glyph and the direction the matcher chose. The curve, when HDR is on, is applied before that segmentation. The image updates when you scan, click **AUTO**, or release a slider. It does not refresh on a timer. **AUTO** sets exposure, gamma, contrast, and black level from one crop's histogram. Move the sliders if a glyph is still soft. The toggle and the four values are saved in the config file.
 
-Arrow shapes decide the code. Samples of each direction are stored in the config after a scan and reused on the next one. If two stratagems share a code, an icon patch stored from an earlier recognition breaks the tie. A name is read only when the code still does not identify the row. On Windows that name comes from Windows.Media.Ocr, or from RapidOCR if that API cannot be called. The catalog code is used only when no arrow code was segmented.
+A scan keeps an arrow code only when the glyphs classify above the confidence threshold. Real Helldivers arrows are not required to match the synthetic triangle templates. If they do not, the same capture is read as names: Windows.Media.Ocr, then RapidOCR, then Tesseract when the crop still contains text. The catalog supplies the code for a recognized name. Samples of each direction are stored after an arrow hit and reused on the next scan. If two stratagems share a code, an icon patch stored from an earlier recognition breaks the tie. A scan that finds nothing leaves the last loadout in place when there is one, and the terminal says whether the capture had no rows, low arrow confidence, or no text. The HDR preview still updates only when you scan, click **AUTO**, or release a slider.
 
 The wheel shows up to 12 stratagems, which covers a normal loadout plus mission stratagems.
 

@@ -48,6 +48,7 @@ class App:
         self._scan_gen = 0
         self._cache: list[LoadoutEntry] = []
         self._cache_notice = ""
+        self._scan_failure = ""
         self._capture_cb: object = None
         self._capture_ready = False
         self._send_lock = threading.Lock()
@@ -200,6 +201,8 @@ class App:
             return sample, "NOT CALIBRATED — SAMPLE LOADOUT"
         if self._cache:
             return list(self._cache), self._cache_notice
+        if self._scan_failure:
+            return [], self._scan_failure
         return [], "NO MISSION SCAN — PRESS THE SCAN BIND"
 
     def _apply_scan(
@@ -222,9 +225,20 @@ class App:
             return
         entries = list(result.entries)
         if not entries:
-            self.settings.set_status("Scan found nothing. The last mission loadout is unchanged.")
-            self.settings.append_log("Scan found nothing. Kept the last loadout.")
+            reason = result.failure or (
+                "Scan found nothing: no rows, the arrow confidence was too low, or the text was empty."
+            )
+            if self._cache:
+                message = f"{reason} The last mission loadout is unchanged."
+            else:
+                message = reason
+                self._scan_failure = reason
+                if self.overlay.visible and not self.config.manual_override:
+                    self.overlay.set_state([], reason, display_bind(self.config.radial_bind))
+            self.settings.set_status(message)
+            self.settings.append_log(message)
             return
+        self._scan_failure = ""
         self.config.glyph_lut = dict(result.glyph_lut)
         self.config.icon_lut = dict(result.icon_lut)
         save_config(self.config)

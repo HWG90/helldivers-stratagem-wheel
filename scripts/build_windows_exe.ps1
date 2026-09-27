@@ -93,6 +93,11 @@ if (-not (Test-Path $tcltkMsi) -or (Get-Item $tcltkMsi).Length -eq 0) {
     Invoke-Checked "curl.exe" "-fL" "--retry" "3" "-o" $tcltkMsi "https://www.python.org/ftp/python/$PyVersion/amd64/tcltk.msi"
 }
 
+$tessExe = Join-Path $Cache "tesseract-ocr-w64-setup-5.4.0.20240606.exe"
+if (-not (Test-Path $tessExe) -or (Get-Item $tessExe).Length -eq 0) {
+    Invoke-Checked "curl.exe" "-fL" "--retry" "3" "-o" $tessExe "https://digi.bib.uni-mannheim.de/tesseract/tesseract-ocr-w64-setup-5.4.0.20240606.exe"
+}
+
 if (Test-Path $Wheels) {
     Remove-Item -Recurse -Force $Wheels
 }
@@ -181,13 +186,30 @@ if ($pthText -notmatch 'import site') {
     throw "Embeddable Python pth is missing 'import site'."
 }
 
+$tessRaw = Join-Path $Cache "tesseract-extract"
+if (Test-Path $tessRaw) {
+    Remove-Item -Recurse -Force $tessRaw
+}
+New-Item -ItemType Directory -Force -Path $tessRaw | Out-Null
+Invoke-Checked $SevenZip "x" "-y" "-o$tessRaw" $tessExe "tesseract.exe" "*.dll" "tessdata/eng.traineddata" "tessdata/eng.user-words" "tessdata/eng.user-patterns"
+$tessDest = Join-Path $Payload "tesseract"
+Invoke-Checked $venvPy (Join-Path $Root "scripts\stage_tesseract.py") $tessRaw $tessDest
+foreach ($runtimeDll in @("vcruntime140.dll", "vcruntime140_1.dll")) {
+    $fromPy = Join-Path $pyDir $runtimeDll
+    $destDll = Join-Path $tessDest $runtimeDll
+    if ((Test-Path $fromPy) -and -not (Test-Path $destDll)) {
+        Copy-Item $fromPy $destDll
+    }
+}
 Get-ChildItem -Path (Join-Path $Payload "pkgs\cv2") -Filter "opencv_videoio_ffmpeg*.dll" -File -ErrorAction SilentlyContinue | Remove-Item -Force
 foreach ($required in @(
     (Join-Path $pyDir "pythonw.exe"),
     (Join-Path $pyDir "Lib\tkinter\__init__.py"),
     (Join-Path $pyDir "tcl\tcl8.6\init.tcl"),
     (Join-Path $Payload "pkgs\stratagems\__main__.py"),
-    (Join-Path $Payload "pkgs\rapidocr\models\PP-OCRv6_rec_small.onnx")
+    (Join-Path $Payload "pkgs\rapidocr\models\PP-OCRv6_rec_small.onnx"),
+    (Join-Path $Payload "tesseract\tesseract.exe"),
+    (Join-Path $Payload "tesseract\tessdata\eng.traineddata")
 )) {
     if (-not (Test-Path $required)) {
         throw "Missing staged file $required"
@@ -273,6 +295,7 @@ def check(folder: Path, also_present: set[str] | None = None) -> None:
         print("\n".join(missing), file=sys.stderr)
         raise SystemExit(f"Missing DLLs under {folder}")
 
+check(payload / "tesseract")
 python_dir = payload / "Python"
 check(python_dir)
 dll_dir = python_dir / "DLLs"
@@ -294,7 +317,7 @@ $listingText = $listing -join "`n"
 if ($listingText -notmatch "rapidocr/models/PP-OCRv6_rec_small.onnx") {
     throw "Installer is missing the RapidOCR recognition model."
 }
-if ($listingText -match "tesseract/tesseract.exe") {
-    throw "Installer still packs Tesseract. Windows does not use it."
+if ($listingText -notmatch "tesseract/tessdata/eng.traineddata") {
+    throw "Installer is missing tesseract/tessdata/eng.traineddata"
 }
 Get-Item $Out | Format-List FullName, Length

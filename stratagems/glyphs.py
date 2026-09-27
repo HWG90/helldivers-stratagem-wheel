@@ -19,7 +19,7 @@ from stratagems.arrows import MAX_ARROWS, MIN_ARROWS, split_name_and_arrows
 from stratagems.catalog import BY_NAME, STRATAGEMS, LoadoutEntry, Stratagem
 from stratagems.hdr import HdrCurve, prepare_scan_image
 from stratagems.matching import best_match
-from stratagems.name_ocr import read_lines
+from stratagems.name_ocr import read_names
 
 PATCH = 24
 PATCH_BYTES = PATCH * PATCH
@@ -34,6 +34,8 @@ class ScanResult:
     entries: list[LoadoutEntry]
     glyph_lut: dict[str, list[str]]
     icon_lut: dict[str, str]
+    reader: str = ""
+    failure: str = ""
 
 
 @dataclass
@@ -165,15 +167,16 @@ def read_loadout(
     icon_lut: dict[str, str] | None = None,
     catalog: tuple[Stratagem, ...] | list[Stratagem] | None = None,
 ) -> ScanResult:
-    """Shape-match arrow codes. OCR runs only when a row still needs a name."""
+    """Fill a loadout from confident arrow glyphs, or from recognized names."""
     prepared = _prepared(image, hdr=hdr, curve=curve)
     memory = memory_from_luts(glyph_lut, icon_lut)
     pool = tuple(catalog) if catalog is not None else STRATAGEMS
-    rows = _segment(prepared, memory)
+    rows, low_confidence = _segment(prepared, memory)
     entries: list[LoadoutEntry] = []
     seen: set[str] = set()
+    reader = ""
     for row in rows:
-        entry = _entry_for_row(prepared, row, memory, pool)
+        entry, source = _entry_for_row(prepared, row, memory, pool)
         if entry is None:
             continue
         key = entry.name.casefold()
@@ -181,8 +184,24 @@ def read_loadout(
             continue
         seen.add(key)
         entries.append(entry)
+        if source == "arrows":
+            reader = "arrows"
+        elif not reader:
+            reader = source
     exported_glyphs, exported_icons = memory.export()
-    return ScanResult(entries, exported_glyphs, exported_icons)
+    if entries:
+        return ScanResult(entries, exported_glyphs, exported_icons, reader=reader)
+    named = read_names(prepared)
+    for entry in _entries_from_names(named.lines, pool):
+        key = entry.name.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        entries.append(entry)
+    if entries:
+        return ScanResult(entries, exported_glyphs, exported_icons, reader=named.reader)
+    failure = _failure_message(rows, low_confidence, named.lines)
+    return ScanResult([], exported_glyphs, exported_icons, failure=failure)
 
 
 def arrow_preview(
@@ -198,7 +217,7 @@ def arrow_preview(
     """
     prepared = _prepared(image, hdr=hdr, curve=curve)
     memory = memory_from_luts(glyph_lut, {})
-    rows = _segment(prepared, memory)
+    rows, _low_confidence = _segment(prepared, memory)
     return _draw_preview(prepared, rows), _preview_text(rows)
 
 
@@ -248,10 +267,11 @@ def _prepared(image: Image.Image, *, hdr: bool, curve: HdrCurve | None) -> Image
     return stage
 
 
-def _segment(prepared: Image.Image, memory: ShapeMemory) -> list[_Row]:
+def _segment(prepared: Image.Image, memory: ShapeMemory) -> tuple[list[_Row], bool]:
     gray = prepared.convert("L")
     width, height = gray.size
     rows: list[_Row] = []
+    low_confidence = False
     for top, bottom in _bands(_mask(gray)[0], width, height):
         band = gray.crop((0, top, width, bottom))
         mask, ink_is_light = _mask(band)
@@ -267,6 +287,7 @@ def _segment(prepared: Image.Image, memory: ShapeMemory) -> list[_Row]:
             patch = _patch(band, comp, ink_is_light)
             direction = _classify(comp, patch, memory)
             if direction is None:
+                low_confidence = True
                 rejected.append((*comp[:4], comp[4], patch))
                 continue
             hits.append(
@@ -288,7 +309,7 @@ def _segment(prepared: Image.Image, memory: ShapeMemory) -> list[_Row]:
         name_right = max(0, first_x - 2)
         name_box = (0, top, name_right, bottom) if name_right >= 8 else None
         rows.append(_Row(tuple(hit.direction for hit in chosen), chosen, icon, name_box))
-    return rows
+    return rows, low_confidence
 
 
 def _entry_for_row(
@@ -296,29 +317,29 @@ def _entry_for_row(
     row: _Row,
     memory: ShapeMemory,
     catalog: tuple[Stratagem, ...] | list[Stratagem],
-) -> LoadoutEntry | None:
+) -> tuple[LoadoutEntry | None, str]:
     if row.code:
         matches = [item for item in catalog if tuple(item.code) == row.code]
         if len(matches) == 1:
             _remember_row(memory, matches[0].name, row)
-            return LoadoutEntry(matches[0].name, row.code, "screen")
+            return LoadoutEntry(matches[0].name, row.code, "screen"), "arrows"
         if len(matches) > 1 and row.icon is not None:
             chosen = memory.match_icon(row.icon, matches)
             if chosen is not None:
                 _remember_row(memory, chosen.name, row)
-                return LoadoutEntry(chosen.name, row.code, "screen")
-        name = _name_from_box(prepared, row.name_box)
+                return LoadoutEntry(chosen.name, row.code, "screen"), "arrows"
+        name, source = _name_from_box(prepared, row.name_box)
         narrowed = matches if matches else list(catalog)
         match = best_match(name, narrowed) if name else None
         if match is not None and (not matches or match.stratagem in matches):
             _remember_row(memory, match.stratagem.name, row)
-            return LoadoutEntry(match.stratagem.name, row.code, "screen")
-        return None
-    name = _name_from_box(prepared, row.name_box)
+            return LoadoutEntry(match.stratagem.name, row.code, "screen"), "arrows"
+        return None, ""
+    name, source = _name_from_box(prepared, row.name_box)
     match = best_match(name, catalog) if name else None
     if match is None:
-        return None
-    return LoadoutEntry(match.stratagem.name, match.stratagem.code, "table")
+        return None, ""
+    return LoadoutEntry(match.stratagem.name, match.stratagem.code, "table"), source
 
 
 def _remember_row(memory: ShapeMemory, name: str, row: _Row) -> None:
@@ -328,18 +349,47 @@ def _remember_row(memory: ShapeMemory, name: str, row: _Row) -> None:
         memory.remember_icon(name, row.icon)
 
 
-def _name_from_box(prepared: Image.Image, box: tuple[int, int, int, int] | None) -> str:
+def _name_from_box(prepared: Image.Image, box: tuple[int, int, int, int] | None) -> tuple[str, str]:
     if box is None:
-        return ""
+        return "", ""
     left, top, right, bottom = box
     if right - left < 8 or bottom - top < 8:
-        return ""
-    lines = read_lines(prepared.crop((left, top, right, bottom)))
-    raw = " ".join(lines).strip()
+        return "", ""
+    read = read_names(prepared.crop((left, top, right, bottom)))
+    raw = " ".join(read.lines).strip()
     if not raw:
-        return ""
+        return "", ""
     name, _arrows = split_name_and_arrows(raw)
-    return name or raw
+    return name or raw, read.reader
+
+
+def _entries_from_names(lines: list[str], catalog: tuple[Stratagem, ...] | list[Stratagem]) -> list[LoadoutEntry]:
+    found: list[LoadoutEntry] = []
+    seen: set[str] = set()
+    for line in lines:
+        name, _arrows = split_name_and_arrows(line)
+        match = best_match(name or line, catalog)
+        if match is None:
+            continue
+        key = match.stratagem.name.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        found.append(LoadoutEntry(match.stratagem.name, match.stratagem.code, "table"))
+    return found
+
+
+def _failure_message(rows: list[_Row], low_confidence: bool, lines: list[str]) -> str:
+    reasons: list[str] = []
+    if not rows:
+        reasons.append("No stratagem rows in the calibrated region.")
+    elif low_confidence or not any(row.code for row in rows):
+        reasons.append("Arrow glyphs were below the confidence threshold.")
+    if not lines:
+        reasons.append("Name recognition returned no text.")
+    else:
+        reasons.append("Recognized text did not match a stratagem.")
+    return " ".join(reasons)
 
 
 def _classify(comp: tuple[int, int, int, int, int, bytearray], patch: bytes, memory: ShapeMemory) -> str | None:

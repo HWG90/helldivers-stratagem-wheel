@@ -1,9 +1,13 @@
 """Synthetic arrow strips decode without Tesseract, then again from the LUT."""
 
-from PIL import Image, ImageDraw
+import shutil
+
+import pytest
+from PIL import Image, ImageDraw, ImageFont
 
 from stratagems.catalog import get
-from stratagems.glyphs import arrow_preview, read_loadout
+from stratagems.glyphs import arrow_preview, geometry_direction, read_loadout
+from stratagems.name_ocr import NameRead
 from stratagems.ocr import scan_image
 
 
@@ -43,7 +47,7 @@ def test_triangle_strip_decodes_without_tesseract_then_from_the_lut(monkeypatch)
     def refuse_ocr(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("name OCR ran")
 
-    monkeypatch.setattr("stratagems.glyphs.read_lines", refuse_ocr)
+    monkeypatch.setattr("stratagems.glyphs.read_names", refuse_ocr)
     monkeypatch.setattr("stratagems.ocr.pytesseract.image_to_data", refuse_ocr)
     monkeypatch.setattr("stratagems.name_ocr.pytesseract.image_to_data", refuse_ocr)
 
@@ -53,6 +57,7 @@ def test_triangle_strip_decodes_without_tesseract_then_from_the_lut(monkeypatch)
     assert [entry.name for entry in first.entries] == ["Reinforce"]
     assert list(first.entries[0].code) == code
     assert first.entries[0].code_source == "screen"
+    assert first.reader == "arrows"
     for direction in ("up", "down", "left", "right"):
         assert first.glyph_lut[direction]
 
@@ -71,7 +76,7 @@ def test_triangle_strip_decodes_without_tesseract_then_from_the_lut(monkeypatch)
 
 def test_icon_lut_picks_the_stratagem_when_the_code_is_shared(monkeypatch) -> None:
     monkeypatch.setattr(
-        "stratagems.glyphs.read_lines",
+        "stratagems.glyphs.read_names",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("name OCR ran")),
     )
     pods = get("Reinforcement Pods")
@@ -90,3 +95,60 @@ def test_icon_lut_picks_the_stratagem_when_the_code_is_shared(monkeypatch) -> No
     )
     assert confirmed.entries[0].name == "Reinforcement Pods"
     assert confirmed.entries[0].code == pods.code
+
+
+def _chevron_bits(size: int = 48, thick: int = 16) -> bytearray:
+    """A thick right-pointing chevron. This is not a filled triangle."""
+    bits = bytearray(size * size)
+    for y in range(size):
+        span = abs(y - size // 2)
+        tip = size - 4
+        x = tip - int(span * 0.9)
+        for offset in range(thick):
+            column = x - offset
+            if 0 <= column < size:
+                bits[y * size + column] = 1
+    return bits
+
+
+def test_chevron_glyph_is_not_required_to_match_synthetic_triangles() -> None:
+    bits = _chevron_bits()
+    assert geometry_direction(bits, 48, 48) is None
+
+
+def test_recognized_name_fills_the_loadout_when_arrow_classification_fails(monkeypatch) -> None:
+    monkeypatch.setattr("stratagems.glyphs.geometry_direction", lambda *_args, **_kwargs: None)
+
+    def names(_image: Image.Image) -> NameRead:
+        return NameRead(["Resupply"], "rapidocr")
+
+    monkeypatch.setattr("stratagems.glyphs.read_names", names)
+    image = _strip(["up", "down", "right", "left", "up"])
+    result = read_loadout(image)
+    resupply = get("Resupply")
+    assert resupply is not None
+    assert result.reader == "rapidocr"
+    assert result.entries[0].name == "Resupply"
+    assert result.entries[0].code == resupply.code
+    assert result.entries[0].code_source == "table"
+    assert result.failure == ""
+
+
+@pytest.mark.skipif(shutil.which("tesseract") is None, reason="tesseract is not installed")
+def test_tesseract_reads_the_name_when_the_glyph_is_not_a_triangle() -> None:
+    bits = _chevron_bits()
+    assert geometry_direction(bits, 48, 48) is None
+    image = Image.new("RGB", (640, 120), (0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 48)
+    draw.text((24, 30), "RESUPPLY", fill=(255, 255, 255), font=font)
+    for y in range(48):
+        for x in range(48):
+            if bits[y * 48 + x]:
+                image.putpixel((520 + x, 36 + y), (255, 255, 255))
+    result = read_loadout(image)
+    resupply = get("Resupply")
+    assert resupply is not None
+    assert [entry.name for entry in result.entries] == ["Resupply"]
+    assert result.entries[0].code == resupply.code
+    assert result.reader == "tesseract"

@@ -63,6 +63,12 @@ if [[ ! -s "$TCLTK_MSI" ]]; then
     "https://www.python.org/ftp/python/${PY_VERSION}/amd64/tcltk.msi"
 fi
 
+TESS_EXE="$CACHE/tesseract-ocr-w64-setup-5.4.0.20240606.exe"
+if [[ ! -s "$TESS_EXE" ]]; then
+  curl -fL --retry 3 -o "$TESS_EXE" \
+    "https://digi.bib.uni-mannheim.de/tesseract/tesseract-ocr-w64-setup-5.4.0.20240606.exe"
+fi
+
 rm -rf "$WHEELS"
 mkdir -p "$WHEELS"
 # --no-deps: pynput's evdev extra is Linux-only and has no Windows wheel.
@@ -148,6 +154,26 @@ if ! grep -q 'import site' "$PTH"; then
   echo "Embeddable Python pth is missing 'import site'." >&2
   exit 1
 fi
+
+TESS_RAW="$CACHE/tesseract-extract"
+rm -rf "$TESS_RAW"
+mkdir -p "$TESS_RAW"
+7z x -y -o"$TESS_RAW" "$TESS_EXE" \
+  tesseract.exe \
+  '*.dll' \
+  'tessdata/eng.traineddata' \
+  'tessdata/eng.user-words' \
+  'tessdata/eng.user-patterns' \
+  >/dev/null
+"$PY" "$ROOT/scripts/stage_tesseract.py" "$TESS_RAW" "$PAYLOAD/tesseract"
+# Tesseract loads the VC runtime from its own directory.
+for runtime_dll in vcruntime140.dll vcruntime140_1.dll; do
+  if [[ -f "$PYDIR/$runtime_dll" && ! -f "$PAYLOAD/tesseract/$runtime_dll" ]]; then
+    cp -a "$PYDIR/$runtime_dll" "$PAYLOAD/tesseract/$runtime_dll"
+  fi
+done
+test -f "$PAYLOAD/tesseract/tesseract.exe"
+test -f "$PAYLOAD/tesseract/tessdata/eng.traineddata"
 
 # Still-image OCR does not use OpenCV's video capture plugin.
 find "$PAYLOAD/pkgs/cv2" -name 'opencv_videoio_ffmpeg*.dll' -delete
@@ -236,6 +262,7 @@ def check(folder: Path, also_present: set[str] | None = None) -> None:
         print("\n".join(missing), file=sys.stderr)
         raise SystemExit(f"Missing DLLs under {folder}")
 
+check(payload / "tesseract")
 python_dir = payload / "Python"
 check(python_dir)
 dll_dir = python_dir / "DLLs"
@@ -257,8 +284,8 @@ if ! 7z l "$OUT" | grep -F 'rapidocr/models/PP-OCRv6_rec_small.onnx'; then
   echo "Installer is missing the RapidOCR recognition model." >&2
   exit 1
 fi
-if 7z l "$OUT" | grep -F 'tesseract/tesseract.exe'; then
-  echo "Installer still packs Tesseract. Windows does not use it." >&2
+if ! 7z l "$OUT" | grep -F 'tesseract/tessdata/eng.traineddata'; then
+  echo "Installer is missing tesseract/tessdata/eng.traineddata" >&2
   exit 1
 fi
 file "$OUT"

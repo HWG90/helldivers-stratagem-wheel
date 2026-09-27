@@ -12,7 +12,7 @@ Caption "Helldivers Stratagem Wheel"
 InstallDir "$LOCALAPPDATA\HelldiversStratagemWheel"
 
 !ifndef APP_VERSION
-  !define APP_VERSION "1.0.7"
+  !define APP_VERSION "1.0.8"
 !endif
 
 !ifndef PAYLOAD
@@ -50,8 +50,15 @@ Section
     File /r "${PAYLOAD}/Python/*"
     SetOutPath "$INSTDIR\pkgs"
     File /r "${PAYLOAD}/pkgs/*"
-    ; Windows name fallback is Windows.Media.Ocr, then RapidOCR. Tesseract
-    ; is not packed into this runtime.
+    ; Last name fallback. tessdata stays its own directory so Tesseract 5.4
+    ; loads eng.traineddata from that folder.
+    SetOutPath "$INSTDIR\tesseract"
+    File "${PAYLOAD}/tesseract/tesseract.exe"
+    File "${PAYLOAD}/tesseract/*.dll"
+    SetOutPath "$INSTDIR\tesseract\tessdata"
+    File "${PAYLOAD}/tesseract/tessdata/eng.traineddata"
+    File /nonfatal "${PAYLOAD}/tesseract/tessdata/eng.user-words"
+    File /nonfatal "${PAYLOAD}/tesseract/tessdata/eng.user-patterns"
     SetOutPath "$INSTDIR"
     File "${PAYLOAD}/Stratagem_Terminal.launch.pyw"
     WriteINIStr "$INSTDIR\runtime.ini" Runtime Version "${APP_VERSION}"
