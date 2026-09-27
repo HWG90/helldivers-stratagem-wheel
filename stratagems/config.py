@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from stratagems.catalog import BY_NAME
+from stratagems.glyphs import sanitize_glyph_lut, sanitize_icon_lut
 from stratagems.sequence import DirectionStyle
 
 
@@ -38,7 +39,6 @@ class Config:
     gap_ms: int = 50
     tail_ms: int = 40
     tap_ms: int = 20
-    auto_scan: bool = True
     manual_override: bool = False
     pinned: list[str] = field(default_factory=list)
     region: Region | None = None
@@ -47,6 +47,8 @@ class Config:
     hdr_gamma: float = 1.0
     hdr_contrast: float = 1.0
     hdr_black_level: float = 0.0
+    glyph_lut: dict[str, list[str]] = field(default_factory=dict)
+    icon_lut: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -59,7 +61,6 @@ class Config:
             "gap_ms": self.gap_ms,
             "tail_ms": self.tail_ms,
             "tap_ms": self.tap_ms,
-            "auto_scan": self.auto_scan,
             "manual_override": self.manual_override,
             "pinned": list(self.pinned),
             "region": None if self.region is None else self.region.to_dict(),
@@ -68,6 +69,8 @@ class Config:
             "hdr_gamma": self.hdr_gamma,
             "hdr_contrast": self.hdr_contrast,
             "hdr_black_level": self.hdr_black_level,
+            "glyph_lut": {key: list(value) for key, value in self.glyph_lut.items()},
+            "icon_lut": dict(self.icon_lut),
         }
 
 
@@ -127,7 +130,6 @@ def _from_dict(data: dict[str, object]) -> Config:
         gap_ms=_ms(data.get("gap_ms"), 50),
         tail_ms=_ms(data.get("tail_ms"), 40),
         tap_ms=_ms(data.get("tap_ms"), 20),
-        auto_scan=_bool(data.get("auto_scan"), True),
         manual_override=_bool(data.get("manual_override"), False),
         pinned=names,
         region=region,
@@ -136,6 +138,8 @@ def _from_dict(data: dict[str, object]) -> Config:
         hdr_gamma=_unit(data.get("hdr_gamma"), 1.0, 0.2, 3.0),
         hdr_contrast=_unit(data.get("hdr_contrast"), 1.0, 0.25, 3.0),
         hdr_black_level=_unit(data.get("hdr_black_level"), 0.0, 0.0, 0.95),
+        glyph_lut=sanitize_glyph_lut(data.get("glyph_lut")),
+        icon_lut=sanitize_icon_lut(data.get("icon_lut")),
     )
 
 

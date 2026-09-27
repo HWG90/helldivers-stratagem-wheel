@@ -17,10 +17,10 @@ from pathlib import Path
 from stratagems.binds import display_bind
 from stratagems.catalog import MAX_WHEEL, LoadoutEntry, get, sample_loadout
 from stratagems.config import Config, load_config, save_config
-from stratagems.cursor_pos import get_cursor, set_cursor
+from stratagems.cursor_pos import get_cursor, hide_cursor, set_cursor, show_cursor
 from stratagems.listen import InputListener
-from stratagems.hdr import curve_from_config, prepare_scan_image
-from stratagems.ocr import OcrError, capture_region, save_bbox, scan_image
+from stratagems.hdr import curve_from_config
+from stratagems.ocr import OcrError, ScanResult, capture_region, save_bbox, scan_image
 from stratagems.overlay import WHEEL_X, WHEEL_Y, RadialOverlay
 from stratagems.placement import Monitor, list_monitors, wheel_top_left
 from stratagems.pointer_lock import PointerLock
@@ -36,7 +36,12 @@ class App:
         self.config, self._load_warning = load_config()
         self._fire_dry = demo
         self._radial_down = False
-        self._lock = PointerLock(get_cursor, set_cursor)
+        self._lock = PointerLock(
+            get_cursor,
+            set_cursor,
+            hide_cursor=hide_cursor,
+            show_cursor=show_cursor,
+        )
         self._held_offset = (0, 0)
         self._scan_gen = 0
         self._cache: list[LoadoutEntry] = []
@@ -85,7 +90,7 @@ class App:
         self._radial_down = False
         if self._lock.active:
             self._lock.release()
-        self.overlay.pointer_locked = False
+        self.overlay.set_pointer_locked(False)
         left, top = self._centered_on_cursor()
         self.present(left, top, dry_run=True)
 
@@ -114,40 +119,43 @@ class App:
             demo=self.demo,
             bind_label=display_bind(self.config.radial_bind),
         )
-        if self.config.auto_scan and not self.config.manual_override and self.config.region is not None:
-            self.scan()
-
     def scan(self) -> None:
+        """Read the calibrated region once. Opening the wheel does not call this."""
         region = self.config.region
         if region is None:
             return
         self._scan_gen += 1
         generation = self._scan_gen
+        glyph_lut = {key: list(value) for key, value in self.config.glyph_lut.items()}
+        icon_lut = dict(self.config.icon_lut)
+        hdr = self.config.hdr
+        curve = curve_from_config(self.config)
         self.settings.set_status("Scanning the stratagem list…")
 
         def work() -> None:
             try:
                 image = capture_region(region.left, region.top, region.width, region.height)
-                image = prepare_scan_image(
+                result = scan_image(
                     image,
-                    enabled=self.config.hdr,
-                    curve=curve_from_config(self.config),
+                    hdr=hdr,
+                    curve=curve,
+                    glyph_lut=glyph_lut,
+                    icon_lut=icon_lut,
                 )
-                entries = scan_image(image)
                 error = None
             except (OcrError, OSError) as exc:
-                entries = []
+                result = None
                 error = str(exc)
             self._later(
-                lambda entries=entries, error=error, generation=generation: self._apply_scan(
-                    generation, entries, error
+                lambda result=result, error=error, generation=generation: self._apply_scan(
+                    generation, result, error
                 )
             )
 
         threading.Thread(target=work, daemon=True).start()
 
     def _open_demo(self) -> None:
-        self.overlay.pointer_locked = False
+        self.overlay.set_pointer_locked(False)
         left, top = self._centered_on_cursor()
         self.present(left, top, dry_run=True)
 
@@ -189,19 +197,26 @@ class App:
             return sample, "NOT CALIBRATED — SAMPLE LOADOUT"
         if self._cache:
             return list(self._cache), self._cache_notice
-        if self.config.auto_scan:
-            return [], "SCANNING STRATAGEM LIST…"
-        return [], "AUTO-SCAN OFF — USE THE RESCAN BIND"
+        return [], "NO MISSION SCAN — PRESS THE SCAN BIND"
 
-    def _apply_scan(self, generation: int, entries: list[LoadoutEntry], error: str | None) -> None:
+    def _apply_scan(self, generation: int, result: ScanResult | None, error: str | None) -> None:
         if generation != self._scan_gen:
             return
-        if error:
-            self.settings.set_status(error)
-            self.settings.append_log(f"Scan failed: {error}")
+        if error or result is None:
+            message = error or "Scan failed."
+            self.settings.set_status(message)
+            self.settings.append_log(f"Scan failed: {message}")
             if self.overlay.visible and not self._cache:
-                self.overlay.set_state([], error.upper(), display_bind(self.config.radial_bind))
+                self.overlay.set_state([], message.upper(), display_bind(self.config.radial_bind))
             return
+        entries = list(result.entries)
+        if not entries:
+            self.settings.set_status("Scan found nothing. The last mission loadout is unchanged.")
+            self.settings.append_log("Scan found nothing. Kept the last loadout.")
+            return
+        self.config.glyph_lut = dict(result.glyph_lut)
+        self.config.icon_lut = dict(result.icon_lut)
+        save_config(self.config)
         total = len(entries)
         capped = entries[:MAX_WHEEL]
         notice = _scan_notice(capped, total)
@@ -286,7 +301,7 @@ class App:
         if anchor is None:
             anchor = (x, y)
         self._radial_down = True
-        self.overlay.pointer_locked = True
+        self.overlay.set_pointer_locked(True)
         left, top = wheel_top_left(anchor[0], anchor[1], self._monitors(), WHEEL_X, WHEEL_Y)
         self.present(left, top, dry_run=self.demo)
         dx, dy = self._lock.offset

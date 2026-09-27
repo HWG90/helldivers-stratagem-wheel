@@ -9,8 +9,8 @@ import pytesseract
 from PIL import Image, ImageGrab, ImageOps, ImageStat
 from pytesseract import TesseractError, TesseractNotFoundError
 
-from stratagems.catalog import LoadoutEntry
-from stratagems.matching import resolve_lines
+from stratagems.glyphs import ScanResult, read_loadout
+from stratagems.hdr import HdrCurve, prepare_scan_image
 from stratagems.runtime import configure_bundled_runtime, tesseract_config
 
 
@@ -62,13 +62,48 @@ def virtual_screen() -> tuple[Image.Image, int, int]:
         return image, 0, 0
 
 
-def scan_image(image: Image.Image) -> list[LoadoutEntry]:
-    return resolve_lines(lines_from_image(image))
+def scan_image(
+    image: Image.Image,
+    *,
+    hdr: bool = False,
+    curve: HdrCurve | None = None,
+    glyph_lut: dict[str, list[str]] | None = None,
+    icon_lut: dict[str, str] | None = None,
+) -> ScanResult:
+    """Read a mission loadout. Arrow shapes supply the code. OCR is names only."""
+    return read_loadout(
+        image,
+        hdr=hdr,
+        curve=curve,
+        glyph_lut=glyph_lut,
+        icon_lut=icon_lut,
+    )
 
 
-def lines_from_image(image: Image.Image) -> list[str]:
+def ocr_bitmap(
+    image: Image.Image,
+    *,
+    hdr: bool = False,
+    curve: HdrCurve | None = None,
+) -> Image.Image:
+    """Return the bitmap ``image_to_data`` receives.
+
+    The crop is passed through the HDR curve only when ``hdr`` is on, then
+    through the same preprocessing as the OCR call. The preview shows this
+    image, and ``lines_from_image`` hands the same object to Tesseract.
+    """
+    stage = prepare_scan_image(image, enabled=hdr, curve=curve or HdrCurve())
+    return preprocess(stage)
+
+
+def lines_from_image(
+    image: Image.Image,
+    *,
+    hdr: bool = False,
+    curve: HdrCurve | None = None,
+) -> list[str]:
     configure_bundled_runtime()
-    prepared = preprocess(image)
+    prepared = ocr_bitmap(image, hdr=hdr, curve=curve)
     try:
         data = pytesseract.image_to_data(
             prepared,

@@ -1,0 +1,32 @@
+# Origin runs this through Depot CI. Depot CI has no Windows runners, so the
+# job uses the existing Linux installer script and still uploads the exe.
+name: Windows exe
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: depot-ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nsis p7zip-full msitools python3-venv python3-pip curl
+
+      - name: Build HelldiversStratagemWheel.exe
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install pynsist pillow
+          ./scripts/build_windows_exe.sh
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: HelldiversStratagemWheel
+          path: build/windows/HelldiversStratagemWheel.exe
+          if-no-files-found: error

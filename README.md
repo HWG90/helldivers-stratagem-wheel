@@ -8,13 +8,21 @@ It does not attach to the game. There is no process injection, no memory reading
 
 Primary target is Windows, where the game runs. `--demo` and the unit tests run on Linux.
 
+## Run on Windows
+
+Double-click `Start.bat` in this folder.
+
+- If `HelldiversStratagemWheel.exe` is beside `Start.bat`, that file starts.
+- Otherwise `Start.bat` creates a virtual environment, installs `requirements.txt`, and runs `python -m stratagems`. Arrow codes are read by shape. On Windows a name, when one is still required, is read by Windows.Media.Ocr or by RapidOCR. Tesseract is not used.
+- Or download `HelldiversStratagemWheel.exe` from the Windows exe workflow and double-click it. GitHub runs `.github/workflows/windows-exe.yml`. Origin runs `.depot/workflows/windows-exe.yml`.
+
 ## Windows
 
-Download `HelldiversStratagemWheel.exe` and double-click it. Python does not need to be installed, and neither does Tesseract.
+Download `HelldiversStratagemWheel.exe` and double-click it. Python does not need to be installed.
 
-The first launch unpacks a private runtime under `%LOCALAPPDATA%\HelldiversStratagemWheel` and opens Stratagem Terminal in live mode. Hold **Mouse3** to open the wheel. Later launches reuse that folder when the bundled version has not changed.
+The first launch unpacks a private runtime under `%LOCALAPPDATA%\HelldiversStratagemWheel` and opens Stratagem Terminal in live mode. Hold **Mouse3** to open the wheel. **Mouse4** scans the list once for the mission. Later launches reuse that folder when the bundled version has not changed.
 
-Tesseract and the English traineddata ship inside the exe. The app finds `tesseract\tesseract.exe` and `tesseract\tessdata\eng.traineddata` next to that runtime on its own.
+Arrow codes are matched by shape. When a name still has to be read, the packaged app calls Windows.Media.Ocr. If that API cannot be called, it uses RapidOCR (ONNX). It does not use Tesseract on Windows.
 
 The file is unsigned. SmartScreen may ask you to confirm it.
 
@@ -84,7 +92,7 @@ The settings window is a normal window titled Stratagem Terminal. The wheel is a
 | Direction keys | Arrow keys |
 | Cancel | Release in the center deadzone, or **Escape** |
 
-Hold the radial bind. The wheel opens at the center of the monitor that contains the cursor and stays there until you release. Aim with the mouse: each movement is added to a virtual offset from the spot where you pressed, and the cursor is warped back there so a game camera does not spin. Release outside the center deadzone to type that stratagem. Release inside the deadzone, or press Escape, to cancel. Releasing puts the cursor back on the saved spot.
+Hold the radial bind. The wheel opens at the center of the monitor that contains the cursor and stays there until you release. It shows the last successful scan. It does not capture the screen. Press the scan bind (Mouse4 by default), or **SCAN** in the terminal, to read the calibrated region once. That loadout stays until the next press. The OS cursor hides while the wheel bind is held. Aim with the mouse: each movement is added to a virtual offset from the spot where you pressed, and the cursor is warped back there so a game camera does not spin. A line on the wheel runs from the center to a dot at that offset. The line grows toward the highlighted wedge and shrinks back to the center inside the deadzone. The dot stays on the wheel; the wedge still uses the real offset. That line is the only aim indicator. Release outside the center deadzone to type that stratagem. Release inside the deadzone, or press Escape, to cancel. Releasing shows the cursor again on the saved spot.
 
 Rebind from the terminal: click REBIND, then press Mouse3, Mouse4, Mouse5, or any keyboard key. Escape cancels the capture. The new bind is written immediately.
 
@@ -116,13 +124,13 @@ To read the list from the game:
 3. Drag a rectangle around that list, including each name and its arrows. Save.
 4. Leave **Auto-scan** on. The next time you hold the radial bind, that rectangle is captured and read.
 
-**RESCAN NOW**, or the rescan bind (Mouse4), reads the region again without waiting for the wheel.
+**SCAN**, or the scan bind (Mouse4), reads that region once. Opening the wheel does not. The live preview under HDR keeps refreshing so you can see the segmented arrows, and it does not replace the saved loadout.
 
 ### Windows HDR
 
-An HDR desktop can hand that same rectangle back flat, dark, or blown out, and the names fail to read. Under **HDR**, next to the region controls, turn on **Adjust captures before OCR**. **REFRESH CROP** shows the raw rectangle beside the adjusted one and prints the OCR text from the adjusted image. **AUTO** sets exposure, gamma, contrast, and black level from that crop's histogram so light text on a dark panel becomes high-contrast. Move the sliders if a name is still soft. The toggle and the four values are saved in the config file. With the toggle off, scans use the capture unchanged.
+An HDR desktop can hand that same rectangle back flat, dark, or blown out. Under **HDR**, next to the region controls, turn on **Adjust captures before reading**. The preview shows each segmented arrow glyph and the direction the matcher chose. The curve, when HDR is on, is applied before that segmentation. The preview refreshes about four times a second, including while you drag a slider. **AUTO** sets exposure, gamma, contrast, and black level from the crop's histogram. Move the sliders if a glyph is still soft. The toggle and the four values are saved in the config file.
 
-Matching uses the verified code table below. If the arrow glyphs on a row parse as a clean direction run, those on-screen arrows are used instead of the table. If they do not (the in-game arrows are often custom art, and Tesseract may not see them as arrow characters), the table code is used.
+Arrow shapes decide the code. Samples of each direction are stored in the config after a scan and reused on the next one. If two stratagems share a code, an icon patch stored from an earlier recognition breaks the tie. A name is read only when the code still does not identify the row. On Windows that name comes from Windows.Media.Ocr, or from RapidOCR if that API cannot be called. The catalog code is used only when no arrow code was segmented.
 
 The wheel shows up to 12 stratagems, which covers a normal loadout plus mission stratagems.
 
@@ -152,7 +160,7 @@ pip install pytest
 pytest
 ```
 
-The tests cover sequence timing, fuzzy name matching, arrow-glyph parsing, angle-to-wedge selection, centering the wheel on the monitor under the cursor, and summing mouse deltas across a cursor warp. They do not need the game.
+The tests cover sequence timing, fuzzy name matching, arrow-shape codes, the aim line staying on the wheel, hiding the cursor for a hold, centering the wheel on the monitor under the cursor, summing mouse deltas across a cursor warp, and that opening the wheel does not scan. They do not need the game.
 
 ## What this will not do
 

@@ -1,6 +1,10 @@
 """Wheel placement is the monitor center. Aiming is a summed mouse delta."""
 
-from stratagems.overlay import WHEEL_X, WHEEL_Y
+import math
+import tkinter as tk
+
+from stratagems.catalog import LoadoutEntry
+from stratagems.overlay import OUTER, WHEEL_X, WHEEL_Y, RadialOverlay
 from stratagems.placement import Monitor, format_geometry, parse_mss_monitors, wheel_top_left
 from stratagems.pointer_lock import PointerLock
 from stratagems.radial_math import wedge_index
@@ -98,3 +102,112 @@ def test_a_failed_warp_does_not_apply_the_same_delta_twice() -> None:
     assert lock.observe(25, 10) == (15, 0)
     assert lock.observe(40, 18) == (30, 8)
     assert lock.release() == (30, 8)
+
+
+def test_hold_hides_the_cursor_and_release_warps_then_shows_it() -> None:
+    cursor = {"x": 400, "y": 300}
+    events: list[tuple[object, ...]] = []
+
+    def get_position() -> tuple[int, int]:
+        return (cursor["x"], cursor["y"])
+
+    def set_position(x: int, y: int) -> None:
+        cursor["x"] = x
+        cursor["y"] = y
+        events.append(("warp", x, y))
+
+    def hide() -> None:
+        events.append(("hide", cursor["x"], cursor["y"]))
+
+    def show() -> None:
+        events.append(("show", cursor["x"], cursor["y"]))
+
+    lock = PointerLock(get_position, set_position, hide_cursor=hide, show_cursor=show)
+    assert lock.engage((0, 0)) == (400, 300)
+    assert events == [("hide", 400, 300)]
+
+    lock.engage((1, 1))
+    assert events == [("hide", 400, 300)]
+
+    cursor["x"] = 460
+    cursor["y"] = 280
+    assert lock.observe(460, 280) == (60, -20)
+    assert events == [("hide", 400, 300), ("warp", 400, 300)]
+    assert (cursor["x"], cursor["y"]) == (400, 300)
+
+    cursor["x"] = 510
+    cursor["y"] = 330
+    assert lock.release() == (60, -20)
+    assert events[-2] == ("warp", 400, 300)
+    assert events[-1] == ("show", 400, 300)
+    assert (cursor["x"], cursor["y"]) == (400, 300)
+    assert lock.release() is None
+    assert events[-1] == ("show", 400, 300)
+
+
+def test_release_shows_the_cursor_after_a_failed_warp() -> None:
+    events: list[str] = []
+
+    def get_position() -> tuple[int, int]:
+        return (8, 9)
+
+    def set_position(x: int, y: int) -> None:
+        events.append("warp")
+        raise OSError("cursor rejected")
+
+    lock = PointerLock(
+        get_position,
+        set_position,
+        hide_cursor=lambda: events.append("hide"),
+        show_cursor=lambda: events.append("show"),
+    )
+    lock.engage((0, 0))
+    assert lock.release() == (0, 0)
+    assert events == ["hide", "warp", "show"]
+    assert lock.release() is None
+    assert events == ["hide", "warp", "show"]
+
+
+def test_aim_line_on_the_wheel_tracks_the_offset_and_is_not_a_cursor() -> None:
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        overlay = RadialOverlay(root, on_confirm=lambda: None, on_cancel=lambda: None)
+        overlay.show(
+            0,
+            0,
+            [
+                LoadoutEntry("Up", ("up",), "sample"),
+                LoadoutEntry("Right", ("right",), "sample"),
+                LoadoutEntry("Down", ("down",), "sample"),
+                LoadoutEntry("Left", ("left",), "sample"),
+            ],
+            "",
+            demo=True,
+            bind_label="Mouse3",
+        )
+        overlay.apply_offset(1000, 0)
+        assert overlay.highlight == 1
+        kinds = [overlay.canvas.type(item) for item in overlay.canvas.find_withtag("aim")]
+        assert kinds == ["line", "line", "oval"]
+        x0, y0, x1, y1 = overlay.canvas.coords(overlay.canvas.find_withtag("aim")[0])
+        assert math.isclose(x0, WHEEL_X)
+        assert math.isclose(y0, WHEEL_Y)
+        assert math.isclose(math.hypot(x1 - x0, y1 - y0), OUTER)
+
+        overlay.apply_offset(1000, 0)
+        assert overlay.highlight == 1
+
+        overlay.apply_offset(30, 0)
+        assert overlay.highlight is None
+        _x0, _y0, x1, y1 = overlay.canvas.coords(overlay.canvas.find_withtag("aim")[0])
+        assert math.isclose(math.hypot(x1 - WHEEL_X, y1 - WHEEL_Y), 30)
+
+        overlay.apply_offset(0, 0)
+        assert overlay.canvas.find_withtag("aim") == ()
+        overlay.set_pointer_locked(True)
+        assert str(overlay.canvas["cursor"]) == "none"
+        overlay.hide()
+        assert overlay.canvas.find_withtag("aim") == ()
+    finally:
+        root.destroy()

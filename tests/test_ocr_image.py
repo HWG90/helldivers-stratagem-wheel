@@ -17,9 +17,9 @@ def test_high_contrast_list_resolves_names() -> None:
     lines = lines_from_image(image)
     blob = " ".join(lines).casefold()
     assert "resupply" in blob
-    rows = scan_image(image)
+    rows = scan_image(image).entries
     names = {row.name for row in rows}
     assert "Resupply" in names
     eagle = next(row for row in rows if row.name == "Eagle Airstrike")
     assert eagle.code == ("up", "right", "down", "right")
-    assert eagle.code_source == "screen"
+    assert eagle.code_source == "table"

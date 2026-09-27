@@ -1,0 +1,30 @@
+name: Windows exe
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install NSIS and 7-Zip
+        run: choco install nsis 7zip -y
+
+      - name: Build HelldiversStratagemWheel.exe
+        shell: pwsh
+        run: ./scripts/build_windows_exe.ps1
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: HelldiversStratagemWheel
+          path: build/windows/HelldiversStratagemWheel.exe
+          if-no-files-found: error

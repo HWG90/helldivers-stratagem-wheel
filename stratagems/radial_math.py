@@ -27,3 +27,19 @@ def wedge_center_angle(index: int, count: int) -> float:
         raise ValueError("count must be positive")
     span = (2 * math.pi) / count
     return index * span - math.pi / 2
+
+
+def aim_endpoint(dx: float, dy: float, radius: float) -> tuple[float, float]:
+    """Scale a virtual offset so the drawn tip stays inside ``radius``.
+
+    A short offset is returned unchanged, including one still inside the
+    selection deadzone. A longer offset keeps its direction and stops on
+    the circle. Selection uses the original offset, not this point.
+    """
+    if radius < 0:
+        raise ValueError("radius must be non-negative")
+    length = math.hypot(dx, dy)
+    if length == 0 or length <= radius:
+        return (dx, dy)
+    scale = radius / length
+    return (dx * scale, dy * scale)

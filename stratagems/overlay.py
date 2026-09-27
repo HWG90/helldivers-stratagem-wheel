@@ -13,7 +13,7 @@ from stratagems.arrows import format_code
 from stratagems.catalog import LoadoutEntry
 from stratagems.matching import short_alias
 from stratagems.placement import format_geometry
-from stratagems.radial_math import wedge_center_angle, wedge_index
+from stratagems.radial_math import aim_endpoint, wedge_center_angle, wedge_index
 from stratagems.theme import BG, BLACK, BODY_CANDIDATES, MUTED, TITLE_CANDIDATES, WHITE, YELLOW, pick_family
 from stratagems.widgets import paint_hazard_border
 
@@ -45,6 +45,7 @@ class RadialOverlay:
         self.highlight: int | None = None
         self.visible = False
         self.pointer_locked = False
+        self._aim = (0.0, 0.0)
         self.external_bind = False
         self.center_screen = (0, 0)
         self.deadzone = DEADZONE
@@ -78,6 +79,7 @@ class RadialOverlay:
         self.demo = demo
         self.bind_label = bind_label
         self.highlight = None
+        self._aim = (0.0, 0.0)
         self._place(left, top)
         self.visible = True
         self.win.deiconify()
@@ -91,8 +93,18 @@ class RadialOverlay:
 
     def hide(self) -> None:
         self.visible = False
-        self.pointer_locked = False
+        self._aim = (0.0, 0.0)
+        self.set_pointer_locked(False)
         self.win.withdraw()
+
+    def set_pointer_locked(self, locked: bool) -> None:
+        self.pointer_locked = locked
+        cursor = "none" if locked else ""
+        try:
+            self.win.configure(cursor=cursor)
+            self.canvas.configure(cursor=cursor)
+        except tk.TclError:
+            pass
 
     def set_highlight(self, index: int | None) -> None:
         if index is not None and not 0 <= index < len(self.entries):
@@ -121,11 +133,17 @@ class RadialOverlay:
         self.apply_offset(x - self.center_screen[0], y - self.center_screen[1])
 
     def apply_offset(self, dx: float, dy: float) -> None:
-        """Highlight from a virtual offset. The deadzone cancels."""
+        """Highlight from a virtual offset. The deadzone cancels.
+
+        The aim line uses a length clamped to the wheel. The wedge still
+        comes from the raw offset.
+        """
         if not self.visible:
             return
+        self._aim = (float(dx), float(dy))
         index = wedge_index(dx, dy, len(self.entries), self.deadzone)
         if index == self.highlight:
+            self._draw_aim()
             return
         self.highlight = index
         self._redraw()
@@ -170,6 +188,7 @@ class RadialOverlay:
             )
         self._draw_wedges()
         self._draw_center()
+        self._draw_aim()
         hint = self._hint()
         canvas.create_text(SIZE / 2, SIZE - 46, text=hint, fill=WHITE, font=(self.family, 10, "bold"))
         if self.demo:
@@ -272,6 +291,32 @@ class RadialOverlay:
             text=format_code(entry.code),
             fill=WHITE,
             font=(self.family, 12, "bold"),
+        )
+
+    def _draw_aim(self) -> None:
+        """Line from the wheel center to the clamped virtual offset. No cursor sprite."""
+        canvas = self.canvas
+        canvas.delete("aim")
+        dx, dy = self._aim
+        tip_dx, tip_dy = aim_endpoint(dx, dy, OUTER)
+        if math.hypot(tip_dx, tip_dy) < 1:
+            return
+        x0 = WHEEL_X
+        y0 = WHEEL_Y
+        x1 = WHEEL_X + tip_dx
+        y1 = WHEEL_Y + tip_dy
+        canvas.create_line(x0, y0, x1, y1, fill=BLACK, width=6, capstyle="round", tags="aim")
+        canvas.create_line(x0, y0, x1, y1, fill=YELLOW, width=3, capstyle="round", tags="aim")
+        dot = 7
+        canvas.create_oval(
+            x1 - dot,
+            y1 - dot,
+            x1 + dot,
+            y1 + dot,
+            fill=BLACK,
+            outline=YELLOW,
+            width=2,
+            tags="aim",
         )
 
 

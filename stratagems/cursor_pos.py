@@ -9,6 +9,7 @@ here injects into another process.
 
 from __future__ import annotations
 
+import atexit
 import ctypes
 import ctypes.util
 import sys
@@ -29,6 +30,21 @@ class _Win32Cursor:
         self._user32.GetCursorPos.restype = wintypes.BOOL
         self._user32.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
         self._user32.SetCursorPos.restype = wintypes.BOOL
+        self._user32.ShowCursor.argtypes = [wintypes.BOOL]
+        self._user32.ShowCursor.restype = ctypes.c_int
+        self._visible = True
+
+    def hide(self) -> None:
+        if not self._visible:
+            return
+        self._user32.ShowCursor(False)
+        self._visible = False
+
+    def show(self) -> None:
+        if self._visible:
+            return
+        self._user32.ShowCursor(True)
+        self._visible = True
 
     def get(self) -> tuple[int, int]:
         point = _POINT()
@@ -81,6 +97,34 @@ class _X11Cursor:
             ctypes.POINTER(ctypes.c_uint),
         ]
         self._x11.XQueryPointer.restype = ctypes.c_int
+        self._xfixes = None
+        self._visible = True
+        fixes_name = ctypes.util.find_library("Xfixes") or "libXfixes.so.3"
+        try:
+            fixes = ctypes.CDLL(fixes_name)
+            fixes.XFixesHideCursor.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+            fixes.XFixesHideCursor.restype = None
+            fixes.XFixesShowCursor.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+            fixes.XFixesShowCursor.restype = None
+        except (OSError, AttributeError):
+            fixes = None
+        self._xfixes = fixes
+
+    def hide(self) -> None:
+        if self._xfixes is None or not self._visible:
+            return
+        with self._lock:
+            self._xfixes.XFixesHideCursor(self._display, self._root)
+            self._x11.XFlush(self._display)
+        self._visible = False
+
+    def show(self) -> None:
+        if self._xfixes is None or self._visible:
+            return
+        with self._lock:
+            self._xfixes.XFixesShowCursor(self._display, self._root)
+            self._x11.XFlush(self._display)
+        self._visible = True
 
     def get(self) -> tuple[int, int]:
         root = ctypes.c_ulong()
@@ -126,6 +170,12 @@ class _PynputCursor:
         with self._lock:
             self._mouse.position = (int(x), int(y))
 
+    def hide(self) -> None:
+        return
+
+    def show(self) -> None:
+        return
+
 
 _backend: _Win32Cursor | _X11Cursor | _PynputCursor | None = None
 _backend_lock = threading.Lock()
@@ -137,6 +187,38 @@ def get_cursor() -> tuple[int, int]:
 
 def set_cursor(x: int, y: int) -> None:
     _cursor().set(x, y)
+
+
+def hide_cursor() -> None:
+    """Hide the OS cursor once. A second call does nothing until ``show_cursor``."""
+    global _cursor_hidden
+    with _visibility_lock:
+        if _cursor_hidden:
+            return
+        _cursor().hide()
+        _cursor_hidden = True
+
+
+def show_cursor() -> None:
+    """Show the OS cursor if this process hid it. Safe to call when it is already shown."""
+    global _cursor_hidden
+    with _visibility_lock:
+        if not _cursor_hidden:
+            return
+        _cursor().show()
+        _cursor_hidden = False
+
+
+def _show_cursor_on_exit() -> None:
+    try:
+        show_cursor()
+    except Exception:
+        return
+
+
+_cursor_hidden = False
+_visibility_lock = threading.Lock()
+atexit.register(_show_cursor_on_exit)
 
 
 def _cursor() -> _Win32Cursor | _X11Cursor | _PynputCursor:

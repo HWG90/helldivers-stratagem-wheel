@@ -52,6 +52,9 @@ def test_saved_json_is_plain() -> None:
     assert payload["hdr_gamma"] == 1.0
     assert payload["hdr_contrast"] == 1.0
     assert payload["hdr_black_level"] == 0.0
+    assert payload["glyph_lut"] == {}
+    assert payload["icon_lut"] == {}
+    assert "auto_scan" not in payload
 
 
 def test_hdr_settings_roundtrip(tmp_path, monkeypatch) -> None:
@@ -88,6 +91,8 @@ def test_old_config_without_hdr_stays_off(tmp_path, monkeypatch) -> None:
     assert loaded.hdr_gamma == 1.0
     assert loaded.hdr_contrast == 1.0
     assert loaded.hdr_black_level == 0.0
+    assert loaded.glyph_lut == {}
+    assert loaded.icon_lut == {}
 
 
 def test_hdr_values_are_clamped(tmp_path, monkeypatch) -> None:

@@ -16,7 +16,17 @@ PAYLOAD="$ROOT/build/windows/payload"
 OUT="$ROOT/build/windows/HelldiversStratagemWheel.exe"
 MEDIA="/cursor/stores/bc-e8591809-38be-4c71-a896-fedcb60eabc2/media/HelldiversStratagemWheel.exe"
 PY_VERSION="3.12.10"
-APP_VERSION="1.0.3"
+APP_VERSION="$(
+  awk '
+    /^\[Application\]/ { in_app = 1; next }
+    /^\[/ { in_app = 0 }
+    in_app && /^version=/ { sub(/^version=/, ""); print; exit }
+  ' "$ROOT/packaging/installer.cfg"
+)"
+if [[ -z "$APP_VERSION" ]]; then
+  echo "packaging/installer.cfg is missing the Application version." >&2
+  exit 1
+fi
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -77,6 +87,23 @@ mkdir -p "$WHEELS"
   packaging \
   rapidfuzz \
   Pillow
+
+# Name fallback on Windows: Windows.Media.Ocr projections, and RapidOCR if
+# that API cannot be called. Dependencies are included. --no-deps stays off
+# here so onnxruntime and the winrt runtime come along.
+"$PY" -m pip download \
+  --dest "$WHEELS" \
+  --only-binary=:all: \
+  --platform win_amd64 \
+  --python-version 3.12 \
+  rapidocr \
+  onnxruntime \
+  winrt-runtime \
+  winrt-Windows.Foundation \
+  winrt-Windows.Globalization \
+  winrt-Windows.Graphics.Imaging \
+  winrt-Windows.Media.Ocr \
+  winrt-Windows.Storage.Streams
 
 export PYTHONPATH="$ROOT"
 "$PYNSIST" "$ROOT/packaging/installer.cfg" --no-makensis
@@ -279,7 +306,10 @@ if ! 7z l "$OUT" | grep -F 'tesseract/tessdata/eng.traineddata'; then
   exit 1
 fi
 file "$OUT"
-mkdir -p "$(dirname "$MEDIA")"
-cp -f "$OUT" "$MEDIA"
-file "$MEDIA"
-ls -l "$MEDIA"
+ls -l "$OUT"
+media_dir="$(dirname "$MEDIA")"
+if [[ -d "$media_dir" ]]; then
+  cp -f "$OUT" "$MEDIA"
+  file "$MEDIA"
+  ls -l "$MEDIA"
+fi
