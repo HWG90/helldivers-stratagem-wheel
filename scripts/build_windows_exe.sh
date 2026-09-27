@@ -16,7 +16,7 @@ PAYLOAD="$ROOT/build/windows/payload"
 OUT="$ROOT/build/windows/HelldiversStratagemWheel.exe"
 MEDIA="/cursor/stores/bc-e8591809-38be-4c71-a896-fedcb60eabc2/media/HelldiversStratagemWheel.exe"
 PY_VERSION="3.12.10"
-APP_VERSION="1.0.1"
+APP_VERSION="1.0.2"
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then

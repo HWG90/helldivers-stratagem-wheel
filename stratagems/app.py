@@ -17,9 +17,12 @@ from pathlib import Path
 from stratagems.binds import display_bind
 from stratagems.catalog import MAX_WHEEL, LoadoutEntry, get, sample_loadout
 from stratagems.config import Config, load_config, save_config
+from stratagems.cursor_pos import get_cursor, set_cursor
 from stratagems.listen import InputListener
 from stratagems.ocr import OcrError, capture_region, save_bbox, scan_image
-from stratagems.overlay import RadialOverlay
+from stratagems.overlay import WHEEL_X, WHEEL_Y, RadialOverlay
+from stratagems.placement import Monitor, list_monitors, wheel_top_left
+from stratagems.pointer_lock import PointerLock
 from stratagems.sender import KeyboardSender
 from stratagems.sequence import execute_plan, format_plan, plan_input
 from stratagems.settings import SettingsHooks, SettingsWindow
@@ -32,8 +35,8 @@ class App:
         self.config, self._load_warning = load_config()
         self._fire_dry = demo
         self._radial_down = False
-        self._tracking = False
-        self._track_gen = 0
+        self._lock = PointerLock(get_cursor, set_cursor)
+        self._held_offset = (0, 0)
         self._scan_gen = 0
         self._cache: list[LoadoutEntry] = []
         self._cache_notice = ""
@@ -73,16 +76,17 @@ class App:
         try:
             self.root.mainloop()
         finally:
-            self._tracking = False
-            self._track_gen += 1
+            self._lock.release()
             if self.listener is not None:
                 self.listener.stop()
 
     def preview(self) -> None:
         self._radial_down = False
-        width = self.root.winfo_screenwidth()
-        height = self.root.winfo_screenheight()
-        self.present(min(1320, width - 420), min(460, height // 2), dry_run=True, track=True)
+        if self._lock.active:
+            self._lock.release()
+        self.overlay.pointer_locked = False
+        left, top = self._centered_on_cursor()
+        self.present(left, top, dry_run=True)
 
     def rescan(self) -> None:
         if self.config.manual_override:
@@ -98,21 +102,17 @@ class App:
         self._capture_ready = False
         self.root.after(250, self._mark_capture_ready)
 
-    def present(self, x: int, y: int, *, dry_run: bool, track: bool) -> None:
+    def present(self, left: int, top: int, *, dry_run: bool) -> None:
         self._fire_dry = dry_run
         entries, notice = self._immediate_state()
         self.overlay.show(
-            x,
-            y,
+            left,
+            top,
             entries,
             notice,
             demo=self.demo,
             bind_label=display_bind(self.config.radial_bind),
         )
-        self._track_gen += 1
-        self._tracking = track
-        if track:
-            self._track(self._track_gen)
         if self.config.auto_scan and not self.config.manual_override and self.config.region is not None:
             self.scan()
 
@@ -141,11 +141,14 @@ class App:
         threading.Thread(target=work, daemon=True).start()
 
     def _open_demo(self) -> None:
-        self.present(1320, 460, dry_run=True, track=True)
+        self.overlay.pointer_locked = False
+        left, top = self._centered_on_cursor()
+        self.present(left, top, dry_run=True)
 
     def _dump_screenshots(self) -> None:
         self._dump_dir.mkdir(parents=True, exist_ok=True)
-        self.present(1320, 460, dry_run=True, track=False)
+        left, top = self._centered_on_cursor()
+        self.present(left, top, dry_run=True)
         self.overlay.set_highlight(0)
         self.root.update_idletasks()
         self.root.update()
@@ -210,8 +213,6 @@ class App:
             return
         entry = self.overlay.selected()
         self.overlay.hide()
-        self._tracking = False
-        self._track_gen += 1
         self._radial_down = False
         if entry is None:
             self.settings.set_status("Cancelled.")
@@ -221,8 +222,7 @@ class App:
 
     def _cancel_wheel(self) -> None:
         self._radial_down = False
-        self._tracking = False
-        self._track_gen += 1
+        self._lock.release()
         if not self.overlay.visible:
             return
         self.overlay.hide()
@@ -274,13 +274,28 @@ class App:
     def _press_radial(self, x: int, y: int) -> None:
         if self._capture_cb is not None or self._radial_down:
             return
+        if not self._lock.active:
+            return
+        anchor = self._lock.anchor
+        if anchor is None:
+            anchor = (x, y)
         self._radial_down = True
-        self.present(x, y, dry_run=self.demo, track=True)
+        self.overlay.pointer_locked = True
+        left, top = wheel_top_left(anchor[0], anchor[1], self._monitors(), WHEEL_X, WHEEL_Y)
+        self.present(left, top, dry_run=self.demo)
+        dx, dy = self._lock.offset
+        self.overlay.apply_offset(dx, dy)
 
     def _release_radial(self) -> None:
         if not self._radial_down:
             return
         self._radial_down = False
+        if self._lock.active:
+            released = self._lock.release()
+            if released is not None:
+                self._held_offset = released
+        dx, dy = self._held_offset
+        self.overlay.apply_offset(dx, dy)
         self._confirm_current()
 
     def _on_mouse(self, name: str, pressed: bool, x: int, y: int) -> None:
@@ -326,17 +341,11 @@ class App:
             self._capture_ready = True
             self.settings.set_status("Listening for the new bind. Escape cancels.")
 
-    def _track(self, generation: int) -> None:
-        if generation != self._track_gen or not self._tracking or not self.overlay.visible:
-            return
-        x, y = self.root.winfo_pointerxy()
-        self.overlay.pointer(x, y)
-        self.root.after(16, lambda: self._track(generation))
-
     def _start_listener(self) -> None:
         try:
-            self.listener = InputListener(self._from_mouse, self._from_key)
+            self.listener = InputListener(self._from_mouse, self._from_key, self._from_move)
             self.listener.start()
+            self.overlay.external_bind = True
         except Exception as exc:
             self.listener = None
             self.settings.set_status(
@@ -344,10 +353,65 @@ class App:
             )
 
     def _from_mouse(self, name: str, pressed: bool, x: int, y: int) -> None:
-        self._later(lambda: self._on_mouse(name, pressed, x, y))
+        if self._capture_cb is None and name == self.config.radial_bind:
+            if pressed:
+                self._arm_hold((x, y))
+            elif self._lock.active:
+                released = self._lock.release()
+                if released is not None:
+                    self._held_offset = released
+        self._later(lambda name=name, pressed=pressed, x=x, y=y: self._on_mouse(name, pressed, x, y))
 
     def _from_key(self, name: str, pressed: bool) -> None:
-        self._later(lambda: self._on_key(name, pressed))
+        if self._capture_cb is None and name == "esc" and pressed and self._lock.active:
+            self._lock.release()
+        elif self._capture_cb is None and name == self.config.radial_bind:
+            if pressed:
+                point = self.listener.pointer if self.listener is not None else (0, 0)
+                self._arm_hold(point)
+            elif self._lock.active:
+                released = self._lock.release()
+                if released is not None:
+                    self._held_offset = released
+        self._later(lambda name=name, pressed=pressed: self._on_key(name, pressed))
+
+    def _from_move(self, x: int, y: int) -> None:
+        if not self._lock.active:
+            return
+        dx, dy = self._lock.observe(x, y)
+        self._later(lambda dx=dx, dy=dy: self._apply_hold_offset(dx, dy))
+
+    def _arm_hold(self, fallback: tuple[int, int]) -> None:
+        if self._capture_cb is not None or self._lock.active or self._radial_down:
+            return
+        self._held_offset = (0, 0)
+        self._lock.engage(fallback)
+
+    def _apply_hold_offset(self, dx: int, dy: int) -> None:
+        if not self._lock.active or not self._radial_down or not self.overlay.visible:
+            return
+        self.overlay.apply_offset(dx, dy)
+
+    def _centered_on_cursor(self) -> tuple[int, int]:
+        x, y = self._cursor_point()
+        return wheel_top_left(x, y, self._monitors(), WHEEL_X, WHEEL_Y)
+
+    def _cursor_point(self) -> tuple[int, int]:
+        try:
+            return get_cursor()
+        except Exception:
+            if self.listener is not None:
+                return self.listener.pointer
+            pointer_x, pointer_y = self.root.winfo_pointerxy()
+            return int(pointer_x), int(pointer_y)
+
+    def _monitors(self) -> list[Monitor]:
+        found = list_monitors()
+        if found:
+            return found
+        width = max(1, int(self.root.winfo_screenwidth()))
+        height = max(1, int(self.root.winfo_screenheight()))
+        return [Monitor(0, 0, width, height)]
 
     def _later(self, callback: object) -> None:
         try:
@@ -364,7 +428,9 @@ class App:
                 "Demo mode. Sample loadout is on the wheel. Confirming a wedge logs the keys and does not send them."
             )
             return
-        self.settings.set_status("Hold Mouse3 to open the wheel. Mouse4 rescans. Escape cancels.")
+        self.settings.set_status(
+            "Hold Mouse3 to open the wheel at the center of your monitor. Mouse4 rescans. Escape cancels."
+        )
 
 
 def _pinned(config: Config) -> list[LoadoutEntry]:

@@ -103,8 +103,10 @@ class SettingsWindow:
         self._bind_row(frame, "Stratagem modifier", "modifier")
         body_label(
             frame,
-            "Hold the radial bind to open the wheel at the cursor. Release on a wedge to type that code. "
-            "Release in the center, or press Escape, to cancel. Rebind accepts mouse buttons and keys.",
+            "Hold the radial bind to open the wheel at the center of the monitor under the cursor. "
+            "The cursor stays where you pressed; mouse movement aims the highlight. "
+            "Release on a wedge to type that code. Release in the center, or press Escape, to cancel. "
+            "Rebind accepts mouse buttons and keys.",
             self.family,
             fg=DIM,
             size=8,

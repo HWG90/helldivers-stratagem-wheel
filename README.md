@@ -84,7 +84,7 @@ The settings window is a normal window titled Stratagem Terminal. The wheel is a
 | Direction keys | Arrow keys |
 | Cancel | Release in the center deadzone, or **Escape** |
 
-Hold the radial bind. The wheel opens at the cursor. Move onto a wedge and release to type that stratagem. Release over the center, or press Escape, to cancel.
+Hold the radial bind. The wheel opens at the center of the monitor that contains the cursor and stays there until you release. Aim with the mouse: each movement is added to a virtual offset from the spot where you pressed, and the cursor is warped back there so a game camera does not spin. Release outside the center deadzone to type that stratagem. Release inside the deadzone, or press Escape, to cancel. Releasing puts the cursor back on the saved spot.
 
 Rebind from the terminal: click REBIND, then press Mouse3, Mouse4, Mouse5, or any keyboard key. Escape cancels the capture. The new bind is written immediately.
 
@@ -148,7 +148,7 @@ pip install pytest
 pytest
 ```
 
-The tests cover sequence timing, fuzzy name matching, arrow-glyph parsing, and angle-to-wedge selection. They do not need the game.
+The tests cover sequence timing, fuzzy name matching, arrow-glyph parsing, angle-to-wedge selection, centering the wheel on the monitor under the cursor, and summing mouse deltas across a cursor warp. They do not need the game.
 
 ## What this will not do
 

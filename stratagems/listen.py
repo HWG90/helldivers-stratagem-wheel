@@ -13,6 +13,7 @@ from stratagems.binds import canonical_key_name
 
 MouseHandler = Callable[[str, bool, int, int], None]
 KeyHandler = Callable[[str, bool], None]
+MoveHandler = Callable[[int, int], None]
 
 
 def mouse_button_name(button: Button) -> str | None:
@@ -21,9 +22,15 @@ def mouse_button_name(button: Button) -> str | None:
 
 
 class InputListener:
-    def __init__(self, on_mouse: MouseHandler, on_key: KeyHandler) -> None:
+    def __init__(
+        self,
+        on_mouse: MouseHandler,
+        on_key: KeyHandler,
+        on_move: MoveHandler | None = None,
+    ) -> None:
         self._on_mouse = on_mouse
         self._on_key = on_key
+        self._on_move = on_move
         self.pointer = (0, 0)
         self._held: set[str] = set()
         self._mouse: MouseListener | None = None
@@ -42,7 +49,10 @@ class InputListener:
             self._keys.stop()
 
     def _move(self, x: int, y: int) -> None:
-        self.pointer = (int(x), int(y))
+        point = (int(x), int(y))
+        self.pointer = point
+        if self._on_move is not None:
+            self._on_move(point[0], point[1])
 
     def _click(self, x: int, y: int, button: Button, pressed: bool) -> None:
         self.pointer = (int(x), int(y))

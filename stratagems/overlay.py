@@ -12,11 +12,15 @@ import ctypes
 from stratagems.arrows import format_code
 from stratagems.catalog import LoadoutEntry
 from stratagems.matching import short_alias
+from stratagems.placement import format_geometry
 from stratagems.radial_math import wedge_center_angle, wedge_index
 from stratagems.theme import BG, BLACK, BODY_CANDIDATES, MUTED, TITLE_CANDIDATES, WHITE, YELLOW, pick_family
 from stratagems.widgets import paint_hazard_border
 
 SIZE = 800
+# The drawn wheel sits below the title, not on the window's geometric center.
+WHEEL_X = SIZE // 2
+WHEEL_Y = 430
 OUTER = 268
 INNER = 102
 DEADZONE = 90
@@ -40,6 +44,8 @@ class RadialOverlay:
         self.bind_label = "Mouse3 (middle)"
         self.highlight: int | None = None
         self.visible = False
+        self.pointer_locked = False
+        self.external_bind = False
         self.center_screen = (0, 0)
         self.deadzone = DEADZONE
 
@@ -53,15 +59,14 @@ class RadialOverlay:
             pass
         self.canvas = tk.Canvas(self.win, width=SIZE, height=SIZE, bg=BG, highlightthickness=0, bd=0)
         self.canvas.pack()
-        self.canvas.bind("<Motion>", self._on_motion)
         self.canvas.bind("<ButtonRelease-1>", self._on_left)
         self.canvas.bind("<ButtonRelease-2>", self._on_middle)
         self.win.bind("<Escape>", lambda _event: self.on_cancel())
 
     def show(
         self,
-        screen_x: int,
-        screen_y: int,
+        left: int,
+        top: int,
         entries: list[LoadoutEntry],
         notice: str,
         *,
@@ -73,7 +78,7 @@ class RadialOverlay:
         self.demo = demo
         self.bind_label = bind_label
         self.highlight = None
-        self._place(screen_x, screen_y)
+        self._place(left, top)
         self.visible = True
         self.win.deiconify()
         self.win.lift()
@@ -86,6 +91,7 @@ class RadialOverlay:
 
     def hide(self) -> None:
         self.visible = False
+        self.pointer_locked = False
         self.win.withdraw()
 
     def set_highlight(self, index: int | None) -> None:
@@ -109,36 +115,36 @@ class RadialOverlay:
         return self.entries[self.highlight]
 
     def pointer(self, x: int, y: int) -> None:
+        """Highlight from an on-screen point. Ignored while the cursor is locked."""
+        if not self.visible or self.pointer_locked:
+            return
+        self.apply_offset(x - self.center_screen[0], y - self.center_screen[1])
+
+    def apply_offset(self, dx: float, dy: float) -> None:
+        """Highlight from a virtual offset. The deadzone cancels."""
         if not self.visible:
             return
-        dx = x - self.center_screen[0]
-        dy = y - self.center_screen[1]
         index = wedge_index(dx, dy, len(self.entries), self.deadzone)
         if index == self.highlight:
             return
         self.highlight = index
         self._redraw()
 
-    def _place(self, screen_x: int, screen_y: int) -> None:
-        screen_w = self.win.winfo_screenwidth()
-        screen_h = self.win.winfo_screenheight()
-        left = int(screen_x - SIZE / 2)
-        top = int(screen_y - SIZE / 2)
-        left = max(0, min(left, max(0, screen_w - SIZE)))
-        top = max(0, min(top, max(0, screen_h - SIZE)))
-        self.center_screen = (left + SIZE // 2, top + SIZE // 2)
-        self.win.geometry(f"{SIZE}x{SIZE}+{left}+{top}")
-
-    def _on_motion(self, event: tk.Event[tk.Misc]) -> None:
-        self.pointer(event.x_root, event.y_root)
+    def _place(self, left: int, top: int) -> None:
+        self.center_screen = (left + WHEEL_X, top + WHEEL_Y)
+        self.win.geometry(format_geometry(SIZE, SIZE, left, top))
 
     def _on_left(self, event: tk.Event[tk.Misc]) -> None:
-        if not self.demo:
+        if not self.demo or self.pointer_locked:
             return
         self.pointer(event.x_root, event.y_root)
         self.on_confirm()
 
     def _on_middle(self, event: tk.Event[tk.Misc]) -> None:
+        # The global listener owns the radial button. A canvas release would
+        # re-aim from the parked cursor and cancel a real selection.
+        if self.pointer_locked or self.external_bind:
+            return
         self.pointer(event.x_root, event.y_root)
         self.on_confirm()
 
@@ -195,7 +201,7 @@ class RadialOverlay:
         span = (2 * math.pi) / count
         pad = min(0.04, span * 0.12)
         center = wedge_center_angle(index, count)
-        points = _arc_points(SIZE / 2, 430, INNER, OUTER, center - span / 2 + pad, center + span / 2 - pad)
+        points = _arc_points(WHEEL_X, WHEEL_Y, INNER, OUTER, center - span / 2 + pad, center + span / 2 - pad)
         fill: str = YELLOW if selected else "#101010"
         outline: str = BLACK if selected else YELLOW
         self.canvas.create_polygon(points, fill=fill, outline=outline, width=2)
@@ -209,8 +215,8 @@ class RadialOverlay:
         name_size = 8 if count >= 9 else 10
         code_size = 9 if count >= 9 else 12
         radius = INNER + (OUTER - INNER) * 0.56
-        x = SIZE / 2 + math.cos(angle) * radius
-        y = 430 + math.sin(angle) * radius
+        x = WHEEL_X + math.cos(angle) * radius
+        y = WHEEL_Y + math.sin(angle) * radius
         lines = wrapped.count("\n") + 1
         name_color = BLACK if selected else WHITE
         code_color = BLACK if selected else YELLOW
@@ -234,8 +240,8 @@ class RadialOverlay:
         )
 
     def _draw_center(self) -> None:
-        cx = SIZE / 2
-        cy = 430
+        cx = WHEEL_X
+        cy = WHEEL_Y
         radius = self.deadzone
         self.canvas.create_oval(
             cx - radius,
