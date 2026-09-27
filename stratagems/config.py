@@ -42,6 +42,11 @@ class Config:
     manual_override: bool = False
     pinned: list[str] = field(default_factory=list)
     region: Region | None = None
+    hdr: bool = False
+    hdr_exposure: float = 0.0
+    hdr_gamma: float = 1.0
+    hdr_contrast: float = 1.0
+    hdr_black_level: float = 0.0
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -58,6 +63,11 @@ class Config:
             "manual_override": self.manual_override,
             "pinned": list(self.pinned),
             "region": None if self.region is None else self.region.to_dict(),
+            "hdr": self.hdr,
+            "hdr_exposure": self.hdr_exposure,
+            "hdr_gamma": self.hdr_gamma,
+            "hdr_contrast": self.hdr_contrast,
+            "hdr_black_level": self.hdr_black_level,
         }
 
 
@@ -121,6 +131,11 @@ def _from_dict(data: dict[str, object]) -> Config:
         manual_override=_bool(data.get("manual_override"), False),
         pinned=names,
         region=region,
+        hdr=_bool(data.get("hdr"), False),
+        hdr_exposure=_unit(data.get("hdr_exposure"), 0.0, -4.0, 4.0),
+        hdr_gamma=_unit(data.get("hdr_gamma"), 1.0, 0.2, 3.0),
+        hdr_contrast=_unit(data.get("hdr_contrast"), 1.0, 0.25, 3.0),
+        hdr_black_level=_unit(data.get("hdr_black_level"), 0.0, 0.0, 0.95),
     )
 
 
@@ -155,3 +170,9 @@ def _bool(value: object, default: bool) -> bool:
     if isinstance(value, bool):
         return value
     return default
+
+
+def _unit(value: object, default: float, low: float, high: float) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return default
+    return round(max(low, min(high, float(value))), 4)

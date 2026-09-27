@@ -118,6 +118,10 @@ To read the list from the game:
 
 **RESCAN NOW**, or the rescan bind (Mouse4), reads the region again without waiting for the wheel.
 
+### Windows HDR
+
+An HDR desktop can hand that same rectangle back flat, dark, or blown out, and the names fail to read. Under **HDR**, next to the region controls, turn on **Adjust captures before OCR**. **REFRESH CROP** shows the raw rectangle beside the adjusted one and prints the OCR text from the adjusted image. **AUTO** sets exposure, gamma, contrast, and black level from that crop's histogram so light text on a dark panel becomes high-contrast. Move the sliders if a name is still soft. The toggle and the four values are saved in the config file. With the toggle off, scans use the capture unchanged.
+
 Matching uses the verified code table below. If the arrow glyphs on a row parse as a clean direction run, those on-screen arrows are used instead of the table. If they do not (the in-game arrows are often custom art, and Tesseract may not see them as arrow characters), the table code is used.
 
 The wheel shows up to 12 stratagems, which covers a normal loadout plus mission stratagems.

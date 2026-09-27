@@ -12,7 +12,7 @@ Caption "Helldivers Stratagem Wheel"
 InstallDir "$LOCALAPPDATA\HelldiversStratagemWheel"
 
 !ifndef APP_VERSION
-  !define APP_VERSION "1.0.2"
+  !define APP_VERSION "1.0.3"
 !endif
 
 !ifndef PAYLOAD
@@ -29,7 +29,7 @@ InstallDir "$LOCALAPPDATA\HelldiversStratagemWheel"
 
 OutFile "${OUTFILE}"
 Icon "${ICON}"
-VIProductVersion "1.0.2.0"
+VIProductVersion "${APP_VERSION}.0"
 VIAddVersionKey "ProductName" "Helldivers Stratagem Wheel"
 VIAddVersionKey "FileDescription" "Stratagem Terminal"
 VIAddVersionKey "FileVersion" "${APP_VERSION}"

@@ -2,19 +2,44 @@
 
 from __future__ import annotations
 
+import queue
+import threading
 import tkinter as tk
 from collections.abc import Callable
 from dataclasses import dataclass
 from tkinter import ttk
+
+from PIL import Image, ImageTk
 
 from stratagems.arrows import format_code
 from stratagems.binds import display_bind
 from stratagems.calibrate import CalibrateWindow
 from stratagems.catalog import MAX_WHEEL, STRATAGEMS, grouped
 from stratagems.config import Config, Region, config_path
+from stratagems.hdr import (
+    BLACK_MAX,
+    BLACK_MIN,
+    BLACK_STEP,
+    CONTRAST_MAX,
+    CONTRAST_MIN,
+    CONTRAST_STEP,
+    EXPOSURE_MAX,
+    EXPOSURE_MIN,
+    EXPOSURE_STEP,
+    GAMMA_MAX,
+    GAMMA_MIN,
+    GAMMA_STEP,
+    HdrCurve,
+    apply_hdr,
+    auto_curve,
+)
+from stratagems.ocr import OcrError, capture_region, lines_from_image
 from stratagems.sequence import format_plan, plan_input
 from stratagems.theme import BG, BLACK, BODY_CANDIDATES, DIM, MONO_CANDIDATES, PANEL, WHITE, YELLOW, pick_family
 from stratagems.widgets import body_label, paint_hazard_border, yellow_button
+
+_PREVIEW_W = 360
+_PREVIEW_H = 132
 
 
 @dataclass(frozen=True)
@@ -38,6 +63,16 @@ class SettingsWindow:
         self._checks: dict[str, tk.BooleanVar] = {}
         self._filter = tk.StringVar()
         self.status = tk.StringVar(value="Ready.")
+        self._raw_image: Image.Image | None = None
+        self._adjusted_image: Image.Image | None = None
+        self._raw_photo: ImageTk.PhotoImage | None = None
+        self._adj_photo: ImageTk.PhotoImage | None = None
+        self._ocr_after: str | None = None
+        self._persist_after: str | None = None
+        self._ocr_gen = 0
+        self._ocr_polling = False
+        self._ocr_queue: queue.Queue[tuple[int, str]] = queue.Queue()
+        self._body_canvas: tk.Canvas | None = None
 
         self._build()
         self._loading = False
@@ -70,12 +105,12 @@ class SettingsWindow:
         header.bind("<Configure>", paint_header)
         self.root.after_idle(paint_header)
 
-        body = tk.Frame(self.root, bg=BG)
-        body.pack(fill="both", expand=True, padx=16, pady=8)
+        body = self._scrolling_body()
 
         self._build_binds(body)
         self._build_input(body)
         self._build_calibration(body)
+        self._build_hdr(body)
         self._build_loadout(body)
         self._build_dry_run(body)
 
@@ -86,9 +121,54 @@ class SettingsWindow:
             f"Config {config_path()}    ·    Ordinary keypresses only. "
             "Helldivers 2 anti-cheat may still flag macros."
         )
-        tk.Label(self.root, text=footer, bg=BG, fg=DIM, anchor="w", font=(self.family, 8), wraplength=820, justify="left").pack(
+        tk.Label(self.root, text=footer, bg=BG, fg=DIM, anchor="w", font=(self.family, 8), wraplength=900, justify="left").pack(
             fill="x", padx=16, pady=(0, 10)
         )
+
+    def _scrolling_body(self) -> tk.Frame:
+        shell = tk.Frame(self.root, bg=BG)
+        shell.pack(fill="both", expand=True, padx=16, pady=8)
+        canvas = tk.Canvas(shell, bg=BG, highlightthickness=0, borderwidth=0)
+        bar = tk.Scrollbar(shell, orient="vertical", command=canvas.yview, bg=PANEL, troughcolor=BLACK)
+        canvas.configure(yscrollcommand=bar.set)
+        bar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        inner = tk.Frame(canvas, bg=BG)
+        window_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        def fit_inner(event: tk.Event[tk.Misc]) -> None:
+            canvas.itemconfigure(window_id, width=event.width)
+
+        def fit_scroll(_event: tk.Event[tk.Misc]) -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        canvas.bind("<Configure>", fit_inner)
+        inner.bind("<Configure>", fit_scroll)
+        self._body_canvas = canvas
+        self.root.bind_all("<Button-4>", self._on_wheel, add="+")
+        self.root.bind_all("<Button-5>", self._on_wheel, add="+")
+        self.root.bind_all("<MouseWheel>", self._on_wheel, add="+")
+        return inner
+
+    def _on_wheel(self, event: tk.Event[tk.Misc]) -> None:
+        delta = getattr(event, "delta", 0)
+        number = getattr(event, "num", 0)
+        step = -3 if number == 4 or delta > 0 else 3
+        self._wheel_target(event).yview_scroll(step, "units")
+
+    def _wheel_target(self, event: tk.Event[tk.Misc]) -> tk.Canvas:
+        checklist = getattr(self, "check_canvas", None)
+        widget = self.root.winfo_containing(int(event.x_root), int(event.y_root))
+        while widget is not None and checklist is not None:
+            if widget == checklist:
+                return checklist
+            parent = getattr(widget, "master", None)
+            widget = parent if isinstance(parent, tk.Misc) else None
+        if self._body_canvas is not None:
+            return self._body_canvas
+        if checklist is None:
+            raise RuntimeError("The settings window has no scrollable surface yet.")
+        return checklist
 
     def _section(self, parent: tk.Misc, title: str) -> tk.Frame:
         frame = tk.Frame(parent, bg=BG)
@@ -271,12 +351,335 @@ class SettingsWindow:
         self._refresh_region()
         self.hooks.on_changed()
         self.set_status(f"Saved region {region.left}, {region.top} {region.width}×{region.height}.")
+        self._capture_hdr_crop()
 
     def _clear_region(self) -> None:
         self.config.region = None
         self._refresh_region()
         self.hooks.on_changed()
         self.set_status("Region cleared. The wheel is back on the sample loadout.")
+        self._clear_hdr_preview()
+
+    def _build_hdr(self, parent: tk.Misc) -> None:
+        frame = self._section(parent, "HDR")
+        self.hdr_var = tk.BooleanVar(value=self.config.hdr)
+        tk.Checkbutton(
+            frame,
+            text="Adjust captures before OCR (Windows HDR)",
+            variable=self.hdr_var,
+            command=self._on_hdr_toggle,
+            bg=BG,
+            fg=WHITE,
+            selectcolor=YELLOW,
+            activebackground=BG,
+            activeforeground=YELLOW,
+            font=(self.family, 10),
+            highlightthickness=0,
+            anchor="w",
+        ).pack(anchor="w")
+        help_text = body_label(
+            frame,
+            "HDR screenshots often come back flat, dark, or blown out, so Tesseract misses the names. "
+            "This curve runs on the cropped screenshot before matching. Auto sets it from the crop histogram "
+            "so light text on a dark panel goes high-contrast. Nudge the sliders if a name is still soft.",
+            self.family,
+            fg=DIM,
+            size=8,
+        )
+        help_text.configure(wraplength=860)
+        help_text.pack(anchor="w", pady=(2, 4))
+
+        self.exposure_var = tk.DoubleVar(value=self.config.hdr_exposure)
+        self.gamma_var = tk.DoubleVar(value=self.config.hdr_gamma)
+        self.contrast_var = tk.DoubleVar(value=self.config.hdr_contrast)
+        self.black_var = tk.DoubleVar(value=self.config.hdr_black_level)
+        self.exposure_text = tk.StringVar()
+        self.gamma_text = tk.StringVar()
+        self.contrast_text = tk.StringVar()
+        self.black_text = tk.StringVar()
+        grid = tk.Frame(frame, bg=BG)
+        grid.pack(fill="x")
+        grid.columnconfigure(0, weight=1)
+        grid.columnconfigure(1, weight=1)
+        self._hdr_slider(
+            grid, "Exposure (stops)", self.exposure_var, self.exposure_text,
+            low=EXPOSURE_MIN, high=EXPOSURE_MAX, step=EXPOSURE_STEP, row=0, column=0,
+        )
+        self._hdr_slider(
+            grid, "Gamma  ·  lower lifts midtones", self.gamma_var, self.gamma_text,
+            low=GAMMA_MIN, high=GAMMA_MAX, step=GAMMA_STEP, row=0, column=1,
+        )
+        self._hdr_slider(
+            grid, "Contrast", self.contrast_var, self.contrast_text,
+            low=CONTRAST_MIN, high=CONTRAST_MAX, step=CONTRAST_STEP, row=1, column=0,
+        )
+        self._hdr_slider(
+            grid, "Black level", self.black_var, self.black_text,
+            low=BLACK_MIN, high=BLACK_MAX, step=BLACK_STEP, row=1, column=1,
+        )
+        self._sync_hdr_labels()
+
+        row = tk.Frame(frame, bg=BG)
+        row.pack(anchor="w", pady=4)
+        yellow_button(row, "AUTO", self._auto_hdr, self.family).pack(side="left")
+        yellow_button(row, "REFRESH CROP", self._capture_hdr_crop, self.family).pack(side="left", padx=8)
+        self.hdr_note = tk.StringVar()
+        self._refresh_hdr_note()
+        tk.Label(
+            frame,
+            textvariable=self.hdr_note,
+            bg=BG,
+            fg=YELLOW,
+            anchor="w",
+            justify="left",
+            font=(self.family, 8),
+        ).pack(anchor="w")
+
+        previews = tk.Frame(frame, bg=BG)
+        previews.pack(fill="x", pady=(6, 0))
+        self._blank_preview = _blank_preview()
+        self.raw_view = self._preview_pane(previews, "RAW")
+        self.adj_view = self._preview_pane(previews, "ADJUSTED")
+        self.hdr_ocr = tk.StringVar(value="Refresh the crop to read names from the adjusted image.")
+        ocr = tk.Label(
+            frame,
+            textvariable=self.hdr_ocr,
+            bg=BLACK,
+            fg=YELLOW,
+            anchor="w",
+            justify="left",
+            font=(self.mono, 9),
+            wraplength=860,
+            padx=8,
+            pady=6,
+            highlightthickness=1,
+            highlightbackground=YELLOW,
+        )
+        ocr.pack(fill="x", pady=(6, 0))
+
+    def _preview_pane(self, parent: tk.Misc, caption: str) -> tk.Label:
+        column = tk.Frame(parent, bg=BG)
+        column.pack(side="left", fill="both", expand=True, padx=(0, 8))
+        tk.Label(column, text=caption, bg=BG, fg=DIM, font=(self.family, 8, "bold")).pack(anchor="w")
+        view = tk.Label(
+            column,
+            image=self._blank_preview,
+            bg=BLACK,
+            highlightthickness=1,
+            highlightbackground=YELLOW,
+        )
+        view.pack(anchor="w")
+        return view
+
+    def _hdr_slider(
+        self,
+        parent: tk.Misc,
+        label: str,
+        variable: tk.DoubleVar,
+        value_var: tk.StringVar,
+        *,
+        low: float,
+        high: float,
+        step: float,
+        row: int,
+        column: int,
+    ) -> None:
+        cell = tk.Frame(parent, bg=BG)
+        cell.grid(row=row, column=column, sticky="ew", padx=(0, 12), pady=2)
+        header = tk.Frame(cell, bg=BG)
+        header.pack(fill="x")
+        tk.Label(header, text=label, bg=BG, fg=WHITE, font=(self.family, 9)).pack(side="left")
+        tk.Label(header, textvariable=value_var, bg=BG, fg=YELLOW, font=(self.mono, 9)).pack(side="right")
+        tk.Scale(
+            cell,
+            from_=low,
+            to=high,
+            resolution=step,
+            orient="horizontal",
+            variable=variable,
+            command=self._on_hdr_slider,
+            bg=BG,
+            fg=YELLOW,
+            troughcolor="#2A2A2A",
+            activebackground=YELLOW,
+            highlightthickness=0,
+            sliderrelief="flat",
+            bd=0,
+            showvalue=False,
+            length=260,
+        ).pack(fill="x")
+
+    def _sync_hdr_labels(self) -> None:
+        self.exposure_text.set(f"{float(self.exposure_var.get()):+.2f} st")
+        self.gamma_text.set(f"{float(self.gamma_var.get()):.2f}")
+        self.contrast_text.set(f"{float(self.contrast_var.get()):.2f}")
+        self.black_text.set(f"{float(self.black_var.get()):.2f}")
+
+    def _refresh_hdr_note(self) -> None:
+        if bool(self.hdr_var.get()):
+            text = "HDR is on. Opening the wheel and Rescan both use the adjusted crop."
+        else:
+            text = "HDR is off. Scans keep the raw capture. This preview still shows the curve."
+        self.hdr_note.set(text)
+
+    def _current_curve(self) -> HdrCurve:
+        return HdrCurve(
+            exposure_stops=float(self.exposure_var.get()),
+            gamma=float(self.gamma_var.get()),
+            contrast=float(self.contrast_var.get()),
+            black_level=float(self.black_var.get()),
+        ).clamped()
+
+    def _push_hdr(self) -> None:
+        curve = self._current_curve()
+        self.config.hdr = bool(self.hdr_var.get())
+        self.config.hdr_exposure = round(curve.exposure_stops, 4)
+        self.config.hdr_gamma = round(curve.gamma, 4)
+        self.config.hdr_contrast = round(curve.contrast, 4)
+        self.config.hdr_black_level = round(curve.black_level, 4)
+        self._sync_hdr_labels()
+        self._refresh_hdr_note()
+
+    def _on_hdr_toggle(self) -> None:
+        if self._loading:
+            return
+        self._push_hdr()
+        self.hooks.on_changed()
+
+    def _on_hdr_slider(self, _value: str) -> None:
+        if self._loading:
+            return
+        self._sync_hdr_labels()
+        self._paint_adjusted()
+        self._schedule_persist()
+        self._schedule_ocr()
+
+    def _schedule_persist(self) -> None:
+        if self._persist_after is not None:
+            self.root.after_cancel(self._persist_after)
+        self._persist_after = self.root.after(250, self._persist_hdr)
+
+    def _persist_hdr(self) -> None:
+        self._persist_after = None
+        if self._loading:
+            return
+        self._push_hdr()
+        self.hooks.on_changed()
+
+    def _auto_hdr(self) -> None:
+        if self._raw_image is None:
+            self._capture_hdr_crop()
+        if self._raw_image is None:
+            return
+        curve = auto_curve(self._raw_image)
+        self._loading = True
+        try:
+            self.hdr_var.set(True)
+            self.exposure_var.set(curve.exposure_stops)
+            self.gamma_var.set(curve.gamma)
+            self.contrast_var.set(curve.contrast)
+            self.black_var.set(curve.black_level)
+        finally:
+            self._loading = False
+        self._push_hdr()
+        self._paint_previews()
+        self.hooks.on_changed()
+        self._schedule_ocr()
+        self.set_status("HDR curve set from the crop histogram. Nudge the sliders if a name is still soft.")
+
+    def _capture_hdr_crop(self) -> None:
+        region = self.config.region
+        if region is None:
+            self._clear_hdr_preview()
+            self.hdr_ocr.set("Calibrate a screen region, then refresh this preview.")
+            self.set_status("Calibrate the stratagem list before refreshing the HDR preview.")
+            return
+        try:
+            image = capture_region(region.left, region.top, region.width, region.height)
+        except (OcrError, OSError) as exc:
+            self.hdr_ocr.set(str(exc))
+            self.set_status(str(exc))
+            return
+        self._raw_image = image
+        self._paint_previews()
+        self._schedule_ocr()
+
+    def _clear_hdr_preview(self) -> None:
+        self._raw_image = None
+        self._adjusted_image = None
+        self._raw_photo = self._blank_preview
+        self._adj_photo = self._blank_preview
+        self.raw_view.configure(image=self._blank_preview)
+        self.adj_view.configure(image=self._blank_preview)
+
+    def _paint_previews(self) -> None:
+        if self._raw_image is None:
+            return
+        self._raw_photo = _thumb(self._raw_image)
+        self.raw_view.configure(image=self._raw_photo, text="")
+        self._paint_adjusted()
+
+    def _paint_adjusted(self) -> None:
+        if self._raw_image is None:
+            return
+        adjusted = apply_hdr(self._raw_image, self._current_curve())
+        self._adjusted_image = adjusted
+        self._adj_photo = _thumb(adjusted)
+        self.adj_view.configure(image=self._adj_photo, text="")
+
+    def _schedule_ocr(self) -> None:
+        if self._adjusted_image is None:
+            return
+        if self._ocr_after is not None:
+            self.root.after_cancel(self._ocr_after)
+            self._ocr_after = None
+        self._ocr_gen += 1
+        generation = self._ocr_gen
+        self._ocr_after = self.root.after(300, lambda: self._run_ocr(generation))
+
+    def _run_ocr(self, generation: int) -> None:
+        self._ocr_after = None
+        if generation != self._ocr_gen or self._adjusted_image is None:
+            return
+        snapshot = self._adjusted_image.copy()
+        self.hdr_ocr.set("Reading the adjusted crop…")
+
+        def work() -> None:
+            try:
+                lines = lines_from_image(snapshot)
+                text = "\n".join(lines) if lines else "No text recognized on the adjusted crop."
+            except OcrError as exc:
+                text = str(exc)
+            except Exception as exc:
+                text = f"Could not read the adjusted crop: {exc}"
+            self._ocr_queue.put((generation, text))
+
+        threading.Thread(target=work, daemon=True).start()
+        self._ensure_ocr_poll()
+
+    def _ensure_ocr_poll(self) -> None:
+        if self._ocr_polling:
+            return
+        self._ocr_polling = True
+        self._poll_ocr()
+
+    def _poll_ocr(self) -> None:
+        current = False
+        try:
+            while True:
+                generation, text = self._ocr_queue.get_nowait()
+                if generation == self._ocr_gen:
+                    self.hdr_ocr.set(text)
+                    current = True
+        except queue.Empty:
+            pass
+        if current:
+            self._ocr_polling = False
+            return
+        try:
+            self.root.after(40, self._poll_ocr)
+        except tk.TclError:
+            self._ocr_polling = False
 
     def _build_loadout(self, parent: tk.Misc) -> None:
         frame = self._section(parent, "MANUAL LOADOUT")
@@ -325,27 +728,10 @@ class SettingsWindow:
         self.check_canvas.configure(yscrollcommand=scroll.set)
         self.check_canvas.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
-        self.check_canvas.bind("<Enter>", lambda _event: self._bind_wheel(True))
-        self.check_canvas.bind("<Leave>", lambda _event: self._bind_wheel(False))
         self._rebuild_checks()
 
     def _size_checks(self, event: tk.Event[tk.Misc]) -> None:
         self.check_canvas.itemconfigure(self._check_window, width=event.width)
-
-    def _bind_wheel(self, active: bool) -> None:
-        if active:
-            self.check_canvas.bind_all("<Button-4>", lambda _event: self.check_canvas.yview_scroll(-3, "units"))
-            self.check_canvas.bind_all("<Button-5>", lambda _event: self.check_canvas.yview_scroll(3, "units"))
-            self.check_canvas.bind_all("<MouseWheel>", self._mousewheel)
-        else:
-            self.check_canvas.unbind_all("<Button-4>")
-            self.check_canvas.unbind_all("<Button-5>")
-            self.check_canvas.unbind_all("<MouseWheel>")
-
-    def _mousewheel(self, event: tk.Event[tk.Misc]) -> None:
-        delta = getattr(event, "delta", 0)
-        step = -1 if delta > 0 else 1
-        self.check_canvas.yview_scroll(step * 3, "units")
 
     def _on_manual(self) -> None:
         if self._loading:
@@ -451,3 +837,18 @@ def _ms(text: str, fallback: int) -> int:
     except ValueError:
         return fallback
     return max(0, min(2000, value))
+
+
+def _thumb(image: Image.Image) -> ImageTk.PhotoImage:
+    scale = min(_PREVIEW_W / max(image.width, 1), _PREVIEW_H / max(image.height, 1))
+    if scale > 2:
+        scale = 2
+    width = max(1, int(round(image.width * scale)))
+    height = max(1, int(round(image.height * scale)))
+    if (width, height) != image.size:
+        image = image.resize((width, height), Image.Resampling.LANCZOS)
+    return ImageTk.PhotoImage(image)
+
+
+def _blank_preview() -> ImageTk.PhotoImage:
+    return ImageTk.PhotoImage(Image.new("RGB", (_PREVIEW_W, 96), (0, 0, 0)))

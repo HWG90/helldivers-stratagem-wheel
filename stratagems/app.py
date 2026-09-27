@@ -19,6 +19,7 @@ from stratagems.catalog import MAX_WHEEL, LoadoutEntry, get, sample_loadout
 from stratagems.config import Config, load_config, save_config
 from stratagems.cursor_pos import get_cursor, set_cursor
 from stratagems.listen import InputListener
+from stratagems.hdr import curve_from_config, prepare_scan_image
 from stratagems.ocr import OcrError, capture_region, save_bbox, scan_image
 from stratagems.overlay import WHEEL_X, WHEEL_Y, RadialOverlay
 from stratagems.placement import Monitor, list_monitors, wheel_top_left
@@ -49,8 +50,8 @@ class App:
         self.root = tk.Tk()
         self.root.title("Stratagem Terminal")
         self.root.configure(bg=BG)
-        self.root.geometry("860x1000+24+24")
-        self.root.minsize(720, 760)
+        self.root.geometry("940x1080+24+24")
+        self.root.minsize(780, 820)
         self.settings = SettingsWindow(
             self.root,
             self.config,
@@ -127,6 +128,11 @@ class App:
         def work() -> None:
             try:
                 image = capture_region(region.left, region.top, region.width, region.height)
+                image = prepare_scan_image(
+                    image,
+                    enabled=self.config.hdr,
+                    curve=curve_from_config(self.config),
+                )
                 entries = scan_image(image)
                 error = None
             except (OcrError, OSError) as exc:
