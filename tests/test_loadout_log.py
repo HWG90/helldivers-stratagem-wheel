@@ -113,7 +113,7 @@ def test_addon_uses_the_loader_log_and_reads_player_state() -> None:
     assert "mods/codex/loadouts" in source
     assert "0x348e8f8" in source
     assert "0x37cb600" in source
-    assert "0x3326468" in source
+    assert "0x33266a0" in source
     assert "0x33266b0" in source
     assert "GetModuleHandleA" in source
     assert "ReadProcessMemory" in source
@@ -196,6 +196,7 @@ local PM = 0x30000000
 local ENTITY = 0x31000000
 local SM = 0x32000000
 local ROWS = 0x33000000
+local MODE = 0x34000000
 local function u32s(n)
     return string.char(
         n % 256,
@@ -209,7 +210,7 @@ local function overlay(buf, offset, bytes)
 end
 local group_sizes = {7204, 1184, 5860, 5228, 19152, 7040, 3832, 18344, 4884, 1104, 6444}
 local group_counts = {13, 2, 11, 9, 36, 13, 7, 34, 9, 2, 13}
-local named = {[1] = '500kg', [2] = 'Autocannon'}
+local named = {[1] = '500kg', [2] = 'Autocannon', [5] = 'Resupply'}
 local parts, table_slots = {}, {}
 local function add(bytes) parts[#parts + 1] = bytes end
 add(u32s(11))
@@ -267,7 +268,13 @@ local function read_region(addr, size)
     end
     return nil
 end
-local function use_rows(kinds, text)
+local function use_rows(kinds, text, mission_type)
+    if mission_type == nil then mission_type = 1 end
+    local mode = string.rep('\0', 0x44)
+    if mission_type > 0 then
+        mode = overlay(mode, 8, u32s(1))
+        mode = overlay(mode, 0x40, u32s(mission_type))
+    end
     local rows = {}
     for _, row_kind in ipairs(kinds) do
         local row = string.rep('\0', 64)
@@ -277,6 +284,8 @@ local function use_rows(kinds, text)
     end
     local row_bytes = table.concat(rows)
     local manager = overlay(overlay(string.rep('\0', 0x80), 0x34, u32s(#kinds)), 0x78, u64s(ROWS))
+    regions[#regions + 1] = {addr = GAME + 0x33266a0, bytes = u64s(MODE)}
+    regions[#regions + 1] = {addr = MODE, bytes = mode}
     regions[#regions + 1] = {addr = GAME + 0x33266b0, bytes = u64s(SM)}
     regions[#regions + 1] = {addr = SM, bytes = manager}
     regions[#regions + 1] = {addr = ROWS, bytes = row_bytes}
@@ -296,36 +305,39 @@ local function use_rows(kinds, text)
 end
 update(0, 'marker')
 assert(forwarded == 'marker')
-assert(calls == 0)
+assert(calls == 1)
+assert(bodies[#bodies] == '# loadouts=no\n# game.dll=no\n# rows=unread\n')
 _G.EquippedStratagemsReader = {
     module = function() return nil end,
     read = function() return nil end,
     pointer = function() return nil end,
 }
 update(0.5, 'unreadable')
-assert(calls == 0)
-use_rows({3}, 'not a stratagem')
+assert(calls == 1)
+use_rows({1, 2}, nil, 0)
+update(0.5, 'ship-menu')
+assert(bodies[#bodies] == '# loadouts=no\n# game.dll=yes\n# rows=2\n')
+use_rows({3}, 'not a stratagem', 1)
 update(0.5, 'unknown-row')
-assert(calls == 0)
-use_rows({1, 2})
+assert(bodies[#bodies] == '# loadouts=no\n# game.dll=yes\n# rows=1\n')
+use_rows({1, 2}, nil, 1)
 update(0.5, 'equipped-rows')
 assert(bodies[#bodies] == 'Eagle 500kg Bomb\nAC-8 Autocannon\n')
 local after_first = calls
 update(0.5, 'same')
 assert(calls == after_first)
-use_rows({3}, 'still not real')
+use_rows({3}, 'still not real', 1)
 update(0.5, 'keep')
 assert(calls == after_first)
-package.loaded['mods/codex/loadouts'] = {current = {}}
-update(0.5, 'clear')
-assert(bodies[#bodies] == '')
+assert(bodies[#bodies] == 'Eagle 500kg Bomb\nAC-8 Autocannon\n')
+package.loaded['mods/codex/loadouts'] = {current = {'Orbital Gatling Barrage'}}
+update(0.5, 'loadouts-ignored')
+assert(calls == after_first)
+assert(bodies[#bodies] == 'Eagle 500kg Bomb\nAC-8 Autocannon\n')
 assert(EquippedStratagems.publish({'W.A.S.P. Launcher', '500 kg'}))
 assert(bodies[#bodies] == 'StA-X3 W.A.S.P. Launcher\nEagle 500kg Bomb\n')
 assert(not EquippedStratagems.publish({'nope'}))
 assert(bodies[#bodies] == 'StA-X3 W.A.S.P. Launcher\nEagle 500kg Bomb\n')
-package.loaded['mods/codex/loadouts'] = {current = {'Orbital Gatling Barrage'}}
-update(0.5, 'loadouts-module')
-assert(bodies[#bodies] == 'Orbital Gatling Barrage\n')
 local registered_label = nil
 local down = false
 _G.ModBindingsMenu = {
@@ -345,7 +357,8 @@ _G.ModBindingsMenu = {
 }
 update(0.1, 'bind-register')
 assert(registered_label == 'Send Strategems')
-package.loaded['mods/codex/loadouts'] = {current = {'Resupply', '500kg'}}
+package.loaded['mods/codex/loadouts'] = nil
+use_rows({5, 1}, nil, 1)
 down = true
 local before_binding = calls
 update(0.1, 'bind-fire')
@@ -353,10 +366,6 @@ assert(calls > before_binding)
 assert(bodies[#bodies] == 'Resupply\nEagle 500kg Bomb\n')
 down = false
 update(0.1, 'bind-up')
-package.loaded['mods/codex/loadouts'] = nil
-use_rows({2})
-update(0.5, 'memory-after-loadouts')
-assert(bodies[#bodies] == 'AC-8 Autocannon\n')
 local chained = update
 dofile('mods/EquippedStratagems/EquippedStratagems.lua')
 assert(update == chained)

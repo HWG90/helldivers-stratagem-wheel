@@ -5,18 +5,17 @@
 -- Send Strategems is a Mod Bindings Menu binding. This file does not patch
 -- code, signature-scan, or hide itself.
 --
--- Read, in order:
--- 1. package.loaded['mods/codex/loadouts'] when that already-loaded module
---    holds exactly one array of 1..16 catalog names (no function calls).
--- 2. Otherwise the same read-only game.dll walk the cloned mods use:
---    GetModuleHandleA + ReadProcessMemory (ClickableScrollbars native_api).
---    Local player: *(game+0x3326468), counts +0x84/+0x88, entity *(+0xe8),
---    owned bit at byte 21 (ShallowWaterDiving / ControllableHoverPack).
---    StratagemInfo names: *(game+0x348e8f8), 80280-byte buffer, 11 groups,
---    header 0x444C444C / 0x30EB6399, 400-byte records, kind at +0, confirmed
---    by *(game+0x37cb600)+kind*8 (BetterStratagemBounce navigation_patch).
---    Equipped rows: *(game+0x33266b0), count u32 +0x34 (1..16), data +0x78,
---    stride 64, kind u32 +12 (ReinforcementBeaconsFixed spawn_data).
+-- The first update always creates EquippedStratagems.log. Until catalog
+-- names are known the file is three status lines (a leading #, which the
+-- wheel ignores). Names replace that status, one catalog name per line.
+-- mods/codex/loadouts is a compiled patch, so it is only reported, never
+-- called. Names come from the in-mission stratagem rows:
+--   game.dll base is tonumber(GetModuleHandleA('game.dll')), then
+--   ReadProcessMemory of a const void* (ModBindingsMenu / ClickableScrollbars).
+--   Mission mode *(game+0x33266a0): +8 nonzero and +0x40 in 1..7
+--   (ShallowWaterDiving / spawn_data). Ship menu is not the loadout.
+--   StratagemInfo *(game+0x348e8f8), table game+0x37cb600 (navigation_patch).
+--   Rows *(game+0x33266b0), count +0x34, data +0x78, stride 64, kind +12.
 
 local prior = rawget(_G, 'EquippedStratagems')
 if type(prior) == 'table' and prior.mod == 'EquippedStratagems' then return end
@@ -29,7 +28,7 @@ local BINDING_LABEL = 'Send Strategems'
 local POLL_SECONDS = 0.5
 local SETTINGS_RVA = 0x348e8f8
 local TABLE_RVA = 0x37cb600
-local PLAYER_RVA = 0x3326468
+local MISSION_RVA = 0x33266a0
 local STRATAGEM_RVA = 0x33266b0
 local SETTINGS_SIZE = 80280
 local RECORD_SIZE = 400
@@ -234,6 +233,7 @@ local CATALOG = {
 
 local api = {api = 1, mod = 'EquippedStratagems', names = nil}
 local last_body = nil
+local have_names = false
 local elapsed = POLL_SECONDS
 local binding_registered = false
 local binding_down = false
@@ -296,11 +296,6 @@ local function u32(bytes, offset)
     return a + b * 256 + c * 65536 + d * 16777216
 end
 
-local function owned_player(entity)
-    local flag = type(entity) == 'string' and entity:byte(21)
-    return flag ~= nil and flag % 2 == 1
-end
-
 local function best_catalog_name(blob)
     if type(blob) ~= 'string' or blob == '' then return nil end
     local best_name, best_len = nil, 3
@@ -340,47 +335,20 @@ local function address_distance(address, base)
     return tonumber(ffi.cast('intptr_t', address) - ffi.cast('intptr_t', base))
 end
 
--- One equipped name list already stored on mods/codex/loadouts.
--- Arrays are observed. Functions are not called.
-local function observe_loadouts()
+-- The compiled loadouts patch does not return a name array. Report only
+-- whether package.loaded already holds one catalog list.
+local function loadouts_usable()
     local loaded = package and package.loaded
     local module = type(loaded) == 'table' and loaded[LOADOUTS_MODULE] or nil
-    if type(module) ~= 'table' and type(module) ~= 'string' then return nil end
-    local lists, empties, seen, nodes = {}, 0, {}, 0
-    local function walk(value, depth)
-        if nodes > 200 or depth > 6 or #lists > 1 then return end
-        if type(value) == 'string' then
-            if not value:find('\n', 1, true) then return end
-            local parts = {}
-            for line in (value .. '\n'):gmatch('(.-)\n') do
-                if line ~= '' then parts[#parts + 1] = line end
-            end
-            value = parts
-        end
-        if type(value) ~= 'table' or seen[value] then return end
-        seen[value] = true
-        nodes = nodes + 1
-        local as_list = as_name_list(value)
-        if as_list then
-            if #as_list == 0 then
-                empties = empties + 1
-            else
-                local names = canonical(as_list)
-                if names and #names > 0 and #names <= MAX_EQUIPPED then
-                    lists[#lists + 1] = names
-                end
-            end
-        end
-        for _, child in pairs(value) do
-            if type(child) == 'table' or type(child) == 'string' then
-                walk(child, depth + 1)
-            end
-        end
-    end
-    walk(module, 0)
-    if #lists == 1 then return lists[1] end
-    if #lists == 0 and empties == 1 then return {} end
-    return nil
+    if type(module) ~= 'table' then return false end
+    local list = as_name_list(module)
+    if not list or #list == 0 then return false end
+    local names = canonical(list)
+    return names ~= nil and #names > 0 and #names <= MAX_EQUIPPED
+end
+
+local function usable_address(value)
+    return type(value) == 'number' and value >= 0x10000 and value < 0x800000000000
 end
 
 local function windows_reader()
@@ -401,12 +369,16 @@ local function windows_reader()
     function api.module(name)
         local handle = kernel.GetModuleHandleA(name)
         if handle == nil then return nil end
-        return ffi.cast('uint8_t *', handle)
+        local base = tonumber(ffi.cast('uintptr_t', handle))
+        if not usable_address(base) then return nil end
+        return base
     end
     function api.read(address, size)
-        if type(size) ~= 'number' or size < 1 or size > 131072 or size % 1 ~= 0 then return nil end
+        if not usable_address(address) or type(size) ~= 'number' then return nil end
+        if size < 1 or size > 131072 or size % 1 ~= 0 then return nil end
         local buffer, count = ffi.new('uint8_t[?]', size), ffi.new('size_t[1]')
-        if kernel.ReadProcessMemory(process, address, buffer, size, count) == 0 or count[0] ~= size then
+        if kernel.ReadProcessMemory(process, ffi.cast('const void *', address), buffer, size, count) == 0
+            or tonumber(count[0]) ~= size then
             return nil
         end
         return ffi.string(buffer, size)
@@ -416,8 +388,9 @@ local function windows_reader()
         if type(bytes) ~= 'string' or offset < 0 or offset + 8 > #bytes then return nil end
         local value = ffi.new('uintptr_t[1]')
         ffi.copy(value, bytes:sub(offset + 1, offset + 8), 8)
-        if value[0] < 0x10000 or value[0] >= 0x800000000000 then return nil end
-        return ffi.cast('uint8_t *', value[0])
+        local address = tonumber(value[0])
+        if not usable_address(address) then return nil end
+        return address
     end
     return api
 end
@@ -453,7 +426,22 @@ local function stratagem_names(api, game)
             local pointed = api.pointer(table_bytes, kind * 8)
             if pointed ~= address_add(buffer, record) then return nil end
             seen[kind], records = true, records + 1
-            names[kind] = best_catalog_name(source:sub(record + 5, record + RECORD_SIZE))
+            local record_bytes = source:sub(record + 1, record + RECORD_SIZE)
+            local name = best_catalog_name(record_bytes:sub(5))
+            if not name then
+                local tries = 0
+                for slot = 0, RECORD_SIZE - 8, 8 do
+                    local address = api.pointer(record_bytes, slot)
+                    if usable_address(address) then
+                        tries = tries + 1
+                        if tries > 4 then break end
+                        local text = api.read(address, 96)
+                        name = type(text) == 'string' and best_catalog_name(text) or nil
+                        if name then break end
+                    end
+                end
+            end
+            names[kind] = name
         end
         offset = finish
     end
@@ -461,34 +449,33 @@ local function stratagem_names(api, game)
     return names
 end
 
--- Local player, then the stratagem rows that spawn_data already reads.
-local function equipped_from_game(api)
-    if type(api) ~= 'table' or type(api.read) ~= 'function'
-        or type(api.module) ~= 'function' or type(api.pointer) ~= 'function' then
-        return nil
-    end
-    local game = api.module('game.dll')
-    if not game then return nil end
-    local by_kind = stratagem_names(api, game)
-    if not by_kind then return nil end
-    local player = api.pointer(api.read(game + PLAYER_RVA, 8))
-    if not player then return nil end
-    local counts = api.read(address_add(player, 0x84), 8)
-    local players, available = u32(counts, 0), u32(counts, 4)
-    if not players or not available or players < 1 or players > 4 or available < 1 or available > 4 then
-        return nil
-    end
-    local entity_ptr = api.pointer(api.read(address_add(player, 0xe8), 8))
-    local entity = entity_ptr and api.read(entity_ptr, 24)
-    if not owned_player(entity) then return nil end
+-- Mission type 1..7, same gate as ShallowWaterDiving and spawn_data.
+-- 0 means the ship menu. nil means the mode block is not readable yet.
+local function mission_type(api, game)
+    local mode = api.pointer(api.read(game + MISSION_RVA, 8))
+    if not usable_address(mode) then return nil end
+    local bytes = api.read(mode, 0x44)
+    if type(bytes) ~= 'string' or #bytes ~= 0x44 then return nil end
+    if u32(bytes, 8) == 0 then return 0 end
+    return u32(bytes, 0x40)
+end
+
+local function row_count(api, game)
     local manager = api.pointer(api.read(game + STRATAGEM_RVA, 8))
-    local header = manager and api.read(manager, 0x80)
-    if type(header) ~= 'string' or #header ~= 0x80 then return nil end
+    if not usable_address(manager) then return nil, nil end
+    local header = api.read(manager, 0x80)
+    if type(header) ~= 'string' or #header ~= 0x80 then return nil, nil end
     local count = u32(header, 0x34)
-    if not count or count < 1 or count > MAX_EQUIPPED then return nil end
+    if not count or count > 512 then return nil, nil end
+    if count == 0 then return 0, '' end
     local data = api.pointer(header, 0x78)
-    local rows = data and api.read(data, count * ROW_STRIDE)
-    if type(rows) ~= 'string' or #rows ~= count * ROW_STRIDE then return nil end
+    if not usable_address(data) then return count, nil end
+    local rows = api.read(data, count * ROW_STRIDE)
+    if type(rows) ~= 'string' or #rows ~= count * ROW_STRIDE then return count, nil end
+    return count, rows
+end
+
+local function names_from_rows(rows, count, by_kind)
     local names, seen = {}, {}
     for index = 0, count - 1 do
         local base = index * ROW_STRIDE
@@ -505,16 +492,28 @@ local function equipped_from_game(api)
     return names
 end
 
-local function read_equipped()
-    local observed = observe_loadouts()
-    if observed then return observed end
-    local ok, names = pcall(equipped_from_game, windows_reader())
-    if not ok then return nil end
-    return names
+local function probe_equipped()
+    local probe = {loadouts = loadouts_usable(), game = false, rows = nil, names = nil}
+    pcall(function()
+        local api = windows_reader()
+        if type(api) ~= 'table' or type(api.module) ~= 'function' then return end
+        local game = api.module('game.dll')
+        if not usable_address(game) then return end
+        probe.game = true
+        local mission = mission_type(api, game)
+        local count, rows = row_count(api, game)
+        probe.rows = count
+        -- Ship menu rows are not the equipped loadout. spawn_data reads this
+        -- list only after mission mode is 1..7.
+        if not mission or mission < 1 or mission > 7 then return end
+        if not count or count < 1 or count > MAX_EQUIPPED or type(rows) ~= 'string' then return end
+        local by_kind = stratagem_names(api, game) or {}
+        probe.names = names_from_rows(rows, count, by_kind)
+    end)
+    return probe
 end
 
-local function write_names(names)
-    local body = table.concat(names, '\n')
+local function write_body(body)
     if body == last_body then return end
     local loader = rawget(_G, 'CowboyBingusModLoader')
     local open_log = loader and loader.open_log
@@ -522,10 +521,35 @@ local function write_names(names)
     local ok, file = pcall(open_log, LOG_NAME)
     if not ok or not file then return end
     local wrote = pcall(function()
-        if body ~= '' then file:write(body, '\n') end
+        file:write(body)
+        if body ~= '' and body:sub(-1) ~= '\n' then file:write('\n') end
         file:close()
     end)
     if wrote then last_body = body end
+end
+
+local function write_names(names)
+    have_names = true
+    write_body(table.concat(names, '\n'))
+end
+
+local function write_status(probe)
+    if have_names then return end
+    local rows = probe.rows == nil and 'unread' or tostring(probe.rows)
+    write_body('# loadouts=' .. (probe.loadouts and 'yes' or 'no')
+        .. '\n# game.dll=' .. (probe.game and 'yes' or 'no')
+        .. '\n# rows=' .. rows)
+end
+
+local function flush_loadout()
+    local probe = probe_equipped()
+    local names = probe.names and canonical(probe.names) or nil
+    if names and #names > 0 then
+        api.names = names
+        write_names(names)
+    else
+        write_status(probe)
+    end
 end
 
 local function publish_list(raw)
@@ -554,8 +578,7 @@ local function service_binding()
     local called, down = pcall(menu.is_down, BINDING_ID)
     if not called or down == nil then return end
     if down and not binding_down then
-        local names = canonical(read_equipped())
-        if names then write_names(names) end
+        flush_loadout()
     end
     binding_down = down
 end
@@ -568,8 +591,7 @@ update = function(dt, ...)
     elapsed = elapsed + (type(dt) == 'number' and dt or 0)
     if elapsed >= POLL_SECONDS then
         elapsed = 0
-        local names = canonical(read_equipped())
-        if names then write_names(names) end
+        flush_loadout()
     end
     if type(previous_update) == 'function' then return previous_update(dt, ...) end
 end
