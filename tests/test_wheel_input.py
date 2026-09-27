@@ -4,7 +4,8 @@ import math
 import tkinter as tk
 
 from stratagems.catalog import LoadoutEntry
-from stratagems.overlay import OUTER, WHEEL_X, WHEEL_Y, RadialOverlay
+from stratagems.overlay import OUTER, TRANSPARENT_KEY, WHEEL_X, WHEEL_Y, RadialOverlay
+from stratagems.theme import YELLOW
 from stratagems.placement import Monitor, format_geometry, parse_mss_monitors, wheel_top_left
 from stratagems.pointer_lock import PointerLock
 from stratagems.radial_math import wedge_index
@@ -168,6 +169,26 @@ def test_release_shows_the_cursor_after_a_failed_warp() -> None:
     assert events == ["hide", "warp", "show"]
 
 
+def test_a_warp_echo_does_not_grow_the_offset_and_a_return_shrinks_it() -> None:
+    cursor = {"x": 0, "y": 0}
+
+    def get_position() -> tuple[int, int]:
+        return (cursor["x"], cursor["y"])
+
+    def set_position(x: int, y: int) -> None:
+        cursor["x"] = x
+        cursor["y"] = y
+
+    lock = PointerLock(get_position, set_position)
+    lock.engage((0, 0))
+    assert lock.observe(500, 0) == (500, 0)
+    assert lock.observe(500, 0) == (500, 0)
+    assert lock.observe(0, 0) == (500, 0)
+    assert lock.observe(-80, 0) == (420, 0)
+    assert lock.observe(0, 0) == (420, 0)
+    assert lock.observe(-400, 0) == (20, 0)
+
+
 def test_aim_line_on_the_wheel_tracks_the_offset_and_is_not_a_cursor() -> None:
     root = tk.Tk()
     root.withdraw()
@@ -202,6 +223,7 @@ def test_aim_line_on_the_wheel_tracks_the_offset_and_is_not_a_cursor() -> None:
         assert overlay.highlight is None
         _x0, _y0, x1, y1 = overlay.canvas.coords(overlay.canvas.find_withtag("aim")[0])
         assert math.isclose(math.hypot(x1 - WHEEL_X, y1 - WHEEL_Y), 30)
+        assert math.isclose(math.hypot(x1 - WHEEL_X, y1 - WHEEL_Y), min(30, OUTER))
 
         overlay.apply_offset(0, 0)
         assert overlay.canvas.find_withtag("aim") == ()
@@ -209,5 +231,28 @@ def test_aim_line_on_the_wheel_tracks_the_offset_and_is_not_a_cursor() -> None:
         assert str(overlay.canvas["cursor"]) == "none"
         overlay.hide()
         assert overlay.canvas.find_withtag("aim") == ()
+
+        overlay.show(
+            0,
+            0,
+            [
+                LoadoutEntry("Up", ("up",), "sample"),
+                LoadoutEntry("Right", ("right",), "sample"),
+            ],
+            "",
+            demo=True,
+            bind_label="Mouse3",
+        )
+        assert overlay.canvas.find_withtag("hazard")
+        wedge = overlay.canvas.find_withtag("wedge")[0]
+        assert overlay.canvas.itemcget(wedge, "stipple") == ""
+        overlay.set_transparent(True)
+        assert overlay.canvas.find_withtag("hazard") == ()
+        assert str(overlay.canvas["bg"]).lower() == TRANSPARENT_KEY
+        for item in overlay.canvas.find_withtag("wedge"):
+            assert overlay.canvas.itemcget(item, "outline").lower() == YELLOW.lower()
+            assert overlay.canvas.itemcget(item, "stipple") in {"gray50", "gray75"}
+        overlay.set_transparent(False)
+        assert overlay.canvas.find_withtag("hazard")
     finally:
         root.destroy()

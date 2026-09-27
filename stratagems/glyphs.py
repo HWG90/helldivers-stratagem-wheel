@@ -1,10 +1,9 @@
-"""Read stratagem arrow codes by shape, not by OCR.
+"""Read stratagem arrow codes from samples the user tagged.
 
-Each row is split into glyphs. An empty look-up table is filled from triangle
-geometry (a wide base and a point). Later scans classify a normalized
-grayscale patch by correlation against those samples. The code is the
-direction run. A second table of icon patches breaks a tie when two
-stratagems share a code. OCR is only asked for a name.
+Learn segments the calibrated region and clusters identical glyphs. The user
+tags each cluster Up, Down, Left, or Right. A scan compares every glyph to
+those saved patches. It does not guess from triangle geometry, and it does
+not call an OCR engine.
 """
 
 from __future__ import annotations
@@ -15,18 +14,18 @@ from dataclasses import dataclass, field
 
 from PIL import Image, ImageDraw, ImageFont
 
-from stratagems.arrows import MAX_ARROWS, MIN_ARROWS, split_name_and_arrows
+from stratagems.arrows import MAX_ARROWS, MIN_ARROWS
 from stratagems.catalog import BY_NAME, STRATAGEMS, LoadoutEntry, Stratagem
 from stratagems.hdr import HdrCurve, prepare_scan_image
-from stratagems.matching import best_match
-from stratagems.name_ocr import read_names
 
 PATCH = 24
 PATCH_BYTES = PATCH * PATCH
 MAX_SAMPLES = 6
 MIN_NCC = 0.62
+CLUSTER_NCC = 0.90
 ICON_MIN = 0.58
 _DIRECTIONS = ("up", "down", "left", "right")
+_LEARN_HINT = "No arrow samples saved. Open the stratagem list and run Learn."
 
 
 @dataclass
@@ -54,6 +53,14 @@ class _Row:
     hits: list[_Hit]
     icon: bytes | None
     name_box: tuple[int, int, int, int] | None
+
+
+@dataclass
+class GlyphCluster:
+    """One unique arrow shape from a Learn capture."""
+
+    patch: bytes
+    count: int
 
 
 @dataclass
@@ -158,6 +165,34 @@ def memory_from_luts(glyph_lut: dict[str, list[str]] | None, icon_lut: dict[str,
     return memory
 
 
+def cluster_glyphs(
+    image: Image.Image,
+    *,
+    hdr: bool = False,
+    curve: HdrCurve | None = None,
+) -> list[GlyphCluster]:
+    """Segment arrow glyphs and collapse identical shapes into one patch each."""
+    prepared = _prepared(image, hdr=hdr, curve=curve)
+    clusters: list[GlyphCluster] = []
+    for patch in _arrow_patches(prepared):
+        _add_cluster(clusters, patch)
+    return clusters
+
+
+def lut_from_tags(clusters: list[GlyphCluster], tags: list[str]) -> dict[str, list[str]]:
+    """Build the config table from the direction the user gave each cluster."""
+    lut: dict[str, list[str]] = {}
+    for cluster, tag in zip(clusters, tags, strict=False):
+        if tag not in _DIRECTIONS:
+            continue
+        samples = lut.setdefault(tag, [])
+        encoded = _encode_patch(cluster.patch)
+        if encoded in samples or len(samples) >= MAX_SAMPLES:
+            continue
+        samples.append(encoded)
+    return lut
+
+
 def read_loadout(
     image: Image.Image,
     *,
@@ -167,41 +202,47 @@ def read_loadout(
     icon_lut: dict[str, str] | None = None,
     catalog: tuple[Stratagem, ...] | list[Stratagem] | None = None,
 ) -> ScanResult:
-    """Fill a loadout from confident arrow glyphs, or from recognized names."""
+    """Map saved arrow samples onto the catalog. This does not call OCR."""
     prepared = _prepared(image, hdr=hdr, curve=curve)
     memory = memory_from_luts(glyph_lut, icon_lut)
+    exported_glyphs, exported_icons = memory.export()
+    if not memory.has_glyphs():
+        return ScanResult([], exported_glyphs, exported_icons, failure=_LEARN_HINT)
     pool = tuple(catalog) if catalog is not None else STRATAGEMS
-    rows, low_confidence = _segment(prepared, memory)
     entries: list[LoadoutEntry] = []
     seen: set[str] = set()
-    reader = ""
-    for row in rows:
-        entry, source = _entry_for_row(prepared, row, memory, pool)
-        if entry is None:
-            continue
-        key = entry.name.casefold()
+    for row_index, (run, icon) in enumerate(_runs(prepared), start=1):
+        directions: list[str] = []
+        for box in run:
+            direction, score = memory.nearest(box.patch)
+            if score < MIN_NCC:
+                return ScanResult(
+                    [],
+                    exported_glyphs,
+                    exported_icons,
+                    failure=f"Row {row_index} has an arrow that does not match a saved sample.",
+                )
+            directions.append(direction)
+        code = tuple(directions)
+        chosen = _catalog_match(code, icon, memory, pool)
+        if chosen is None:
+            return ScanResult(
+                [],
+                exported_glyphs,
+                exported_icons,
+                failure=f"Row {row_index} did not match a stratagem.",
+            )
+        if icon is not None:
+            memory.remember_icon(chosen.name, icon)
+        key = chosen.name.casefold()
         if key in seen:
             continue
         seen.add(key)
-        entries.append(entry)
-        if source == "arrows":
-            reader = "arrows"
-        elif not reader:
-            reader = source
+        entries.append(LoadoutEntry(chosen.name, code, "screen"))
     exported_glyphs, exported_icons = memory.export()
-    if entries:
-        return ScanResult(entries, exported_glyphs, exported_icons, reader=reader)
-    named = read_names(prepared)
-    for entry in _entries_from_names(named.lines, pool):
-        key = entry.name.casefold()
-        if key in seen:
-            continue
-        seen.add(key)
-        entries.append(entry)
-    if entries:
-        return ScanResult(entries, exported_glyphs, exported_icons, reader=named.reader)
-    failure = _failure_message(rows, low_confidence, named.lines)
-    return ScanResult([], exported_glyphs, exported_icons, failure=failure)
+    if not entries:
+        return ScanResult([], exported_glyphs, exported_icons, failure="No arrow glyphs in the calibrated region.")
+    return ScanResult(entries, exported_glyphs, exported_icons, reader="samples")
 
 
 def arrow_preview(
@@ -312,93 +353,89 @@ def _segment(prepared: Image.Image, memory: ShapeMemory) -> tuple[list[_Row], bo
     return rows, low_confidence
 
 
-def _entry_for_row(
-    prepared: Image.Image,
-    row: _Row,
+def _classify(comp: tuple[int, int, int, int, int, bytearray], patch: bytes, memory: ShapeMemory) -> str | None:
+    del comp
+    if not memory.has_glyphs():
+        return None
+    direction, score = memory.nearest(patch)
+    if score >= MIN_NCC:
+        return direction
+    return None
+
+
+def _add_cluster(clusters: list[GlyphCluster], patch: bytes) -> None:
+    for cluster in clusters:
+        if _ncc(patch, cluster.patch) >= CLUSTER_NCC:
+            cluster.count += 1
+            return
+    clusters.append(GlyphCluster(patch, 1))
+
+
+def _catalog_match(
+    code: tuple[str, ...],
+    icon: bytes | None,
     memory: ShapeMemory,
     catalog: tuple[Stratagem, ...] | list[Stratagem],
-) -> tuple[LoadoutEntry | None, str]:
-    if row.code:
-        matches = [item for item in catalog if tuple(item.code) == row.code]
-        if len(matches) == 1:
-            _remember_row(memory, matches[0].name, row)
-            return LoadoutEntry(matches[0].name, row.code, "screen"), "arrows"
-        if len(matches) > 1 and row.icon is not None:
-            chosen = memory.match_icon(row.icon, matches)
-            if chosen is not None:
-                _remember_row(memory, chosen.name, row)
-                return LoadoutEntry(chosen.name, row.code, "screen"), "arrows"
-        name, source = _name_from_box(prepared, row.name_box)
-        narrowed = matches if matches else list(catalog)
-        match = best_match(name, narrowed) if name else None
-        if match is not None and (not matches or match.stratagem in matches):
-            _remember_row(memory, match.stratagem.name, row)
-            return LoadoutEntry(match.stratagem.name, row.code, "screen"), "arrows"
-        return None, ""
-    name, source = _name_from_box(prepared, row.name_box)
-    match = best_match(name, catalog) if name else None
-    if match is None:
-        return None, ""
-    return LoadoutEntry(match.stratagem.name, match.stratagem.code, "table"), source
+) -> Stratagem | None:
+    matches = [item for item in catalog if tuple(item.code) == code]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1 and icon is not None:
+        return memory.match_icon(icon, matches)
+    return None
 
 
-def _remember_row(memory: ShapeMemory, name: str, row: _Row) -> None:
-    for hit in row.hits:
-        memory.remember_glyph(hit.direction, hit.patch)
-    if row.icon is not None:
-        memory.remember_icon(name, row.icon)
+def _arrow_patches(prepared: Image.Image) -> list[bytes]:
+    patches: list[bytes] = []
+    for run, _icon in _component_runs(prepared, arrow_runs_only=False):
+        for box in run:
+            patches.append(box.patch)
+    return patches
 
 
-def _name_from_box(prepared: Image.Image, box: tuple[int, int, int, int] | None) -> tuple[str, str]:
-    if box is None:
-        return "", ""
-    left, top, right, bottom = box
-    if right - left < 8 or bottom - top < 8:
-        return "", ""
-    read = read_names(prepared.crop((left, top, right, bottom)))
-    raw = " ".join(read.lines).strip()
-    if not raw:
-        return "", ""
-    name, _arrows = split_name_and_arrows(raw)
-    return name or raw, read.reader
+def _runs(prepared: Image.Image) -> list[tuple[list[_Hit], bytes | None]]:
+    return _component_runs(prepared, arrow_runs_only=True)
 
 
-def _entries_from_names(lines: list[str], catalog: tuple[Stratagem, ...] | list[Stratagem]) -> list[LoadoutEntry]:
-    found: list[LoadoutEntry] = []
-    seen: set[str] = set()
-    for line in lines:
-        name, _arrows = split_name_and_arrows(line)
-        match = best_match(name or line, catalog)
-        if match is None:
+def _component_runs(prepared: Image.Image, *, arrow_runs_only: bool) -> list[tuple[list[_Hit], bytes | None]]:
+    gray = prepared.convert("L")
+    width, height = gray.size
+    found: list[tuple[list[_Hit], bytes | None]] = []
+    for top, bottom in _bands(_mask(gray)[0], width, height):
+        band = gray.crop((0, top, width, bottom))
+        mask, ink_is_light = _mask(band)
+        comps = _components(mask, band.width, band.height)
+        hits: list[_Hit] = []
+        rejected: list[tuple[int, int, int, int, int, bytes]] = []
+        for comp in comps:
+            fill = comp[4] / max(1, comp[2] * comp[3])
+            patch = _patch(band, comp, ink_is_light)
+            if not _arrow_sized(comp, band.width, band.height, fill):
+                if comp[4] >= 40:
+                    rejected.append((*comp[:4], comp[4], patch))
+                continue
+            hits.append(
+                _Hit(
+                    x=comp[0],
+                    y=comp[1] + top,
+                    width=comp[2],
+                    height=comp[3],
+                    direction="",
+                    patch=patch,
+                )
+            )
+        if not hits:
             continue
-        key = match.stratagem.name.casefold()
-        if key in seen:
-            continue
-        seen.add(key)
-        found.append(LoadoutEntry(match.stratagem.name, match.stratagem.code, "table"))
+        if arrow_runs_only:
+            chosen = _choose_run(hits)
+            if not chosen:
+                continue
+            kept = chosen
+        else:
+            kept = hits
+        first_x = min(hit.x for hit in kept)
+        found.append((kept, _icon_patch(rejected, first_x)))
     return found
-
-
-def _failure_message(rows: list[_Row], low_confidence: bool, lines: list[str]) -> str:
-    reasons: list[str] = []
-    if not rows:
-        reasons.append("No stratagem rows in the calibrated region.")
-    elif low_confidence or not any(row.code for row in rows):
-        reasons.append("Arrow glyphs were below the confidence threshold.")
-    if not lines:
-        reasons.append("Name recognition returned no text.")
-    else:
-        reasons.append("Recognized text did not match a stratagem.")
-    return " ".join(reasons)
-
-
-def _classify(comp: tuple[int, int, int, int, int, bytearray], patch: bytes, memory: ShapeMemory) -> str | None:
-    if memory.has_glyphs():
-        direction, score = memory.nearest(patch)
-        if score >= MIN_NCC:
-            return direction
-        return None
-    return geometry_direction(comp[5], comp[2], comp[3])
 
 
 def _choose_run(hits: list[_Hit]) -> list[_Hit]:

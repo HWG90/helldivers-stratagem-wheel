@@ -54,6 +54,8 @@ def test_saved_json_is_plain() -> None:
     assert payload["hdr_black_level"] == 0.0
     assert payload["glyph_lut"] == {}
     assert payload["icon_lut"] == {}
+    assert payload["learn_bind"] == "mouse5"
+    assert payload["transparent_wheel"] is False
     assert "auto_scan" not in payload
 
 
@@ -93,6 +95,8 @@ def test_old_config_without_hdr_stays_off(tmp_path, monkeypatch) -> None:
     assert loaded.hdr_black_level == 0.0
     assert loaded.glyph_lut == {}
     assert loaded.icon_lut == {}
+    assert loaded.learn_bind == "mouse5"
+    assert loaded.transparent_wheel is False
 
 
 def test_hdr_values_are_clamped(tmp_path, monkeypatch) -> None:

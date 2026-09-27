@@ -7,8 +7,14 @@ import tkinter as tk
 from stratagems.theme import BG, BLACK, WHITE, YELLOW
 
 
-def paint_hazard_border(canvas: tk.Canvas, width: int, height: int, band: int = 16) -> None:
-    canvas.create_rectangle(0, 0, width, height, fill=YELLOW, outline="")
+def paint_hazard_border(
+    canvas: tk.Canvas,
+    width: int,
+    height: int,
+    band: int = 16,
+    tags: tuple[str, ...] = (),
+) -> None:
+    canvas.create_rectangle(0, 0, width, height, fill=YELLOW, outline="", tags=tags)
     stripe = max(8, band)
     x = -height
     while x < width + height:
@@ -23,6 +29,7 @@ def paint_hazard_border(canvas: tk.Canvas, width: int, height: int, band: int = 
             height,
             fill=BLACK,
             outline="",
+            tags=tags,
         )
         x += stripe * 2
     inset = band
@@ -34,6 +41,7 @@ def paint_hazard_border(canvas: tk.Canvas, width: int, height: int, band: int = 
         fill=BG,
         outline=YELLOW,
         width=2,
+        tags=tags,
     )
 
 

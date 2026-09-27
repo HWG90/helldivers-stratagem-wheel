@@ -33,6 +33,7 @@ class PointerLock:
         self._last: tuple[int, int] = (0, 0)
         self._offset: tuple[int, int] = (0, 0)
         self._busy = False
+        self._echo: tuple[int, int] | None = None
         self._cursor_hidden = False
 
     @property
@@ -62,20 +63,25 @@ class PointerLock:
             self._anchor = anchor
             self._last = anchor
             self._offset = (0, 0)
+            self._echo = None
             self._busy = False
         if starting:
             self._hide_os_cursor()
         return anchor
 
     def observe(self, x: int, y: int) -> tuple[int, int]:
-        """Add the delta from the previous sample, then warp back to the anchor.
+        """Add the move, then warp the cursor back to the anchor.
 
-        A sample that lands on the anchor (the warp itself, or a repeated
-        event) adds nothing, so a later move still accumulates on top.
+        The warp's own mouse event, and a repeat of the point just consumed,
+        add nothing. A later move is measured from the anchor, so aiming
+        back toward the center shrinks the stored offset.
         """
         sample = (int(x), int(y))
         with self._mutex:
             if self._anchor is None or self._busy:
+                return self._offset
+            anchor = self._anchor
+            if sample == anchor or sample == self._echo:
                 return self._offset
             dx = sample[0] - self._last[0]
             dy = sample[1] - self._last[1]
@@ -83,17 +89,21 @@ class PointerLock:
                 return self._offset
             self._offset = (self._offset[0] + dx, self._offset[1] + dy)
             result = self._offset
-            anchor = self._anchor
+            self._echo = sample
+            # Measure the next real move from the anchor even if the warp
+            # event is delivered before this call returns.
+            self._last = anchor
             self._busy = True
         landed = self._warp(anchor)
         with self._mutex:
             self._busy = False
             if self._anchor is None:
                 return result
-            # A successful warp parks the cursor on the anchor, so the next
-            # delta is measured from there. A failed warp leaves it at the
-            # sample, and the next delta continues from that sample.
-            self._last = anchor if landed else sample
+            if not landed:
+                # The cursor is still on the sample, so the next delta
+                # continues from there. There is no warp event to ignore.
+                self._last = sample
+                self._echo = None
         return result
 
     def release(self) -> tuple[int, int] | None:
@@ -106,6 +116,7 @@ class PointerLock:
             self._anchor = None
             self._offset = (0, 0)
             self._last = (0, 0)
+            self._echo = None
             self._busy = False
             show = self._cursor_hidden
             self._cursor_hidden = False

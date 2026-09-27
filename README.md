@@ -13,16 +13,16 @@ Primary target is Windows, where the game runs. `--demo` and the unit tests run 
 Double-click `Start.bat` in this folder.
 
 - If `HelldiversStratagemWheel.exe` is beside `Start.bat`, that file starts.
-- Otherwise `Start.bat` creates a virtual environment, installs `requirements.txt`, and runs `python -m stratagems`. A scan reads arrow shapes when they classify, and otherwise reads names with Windows.Media.Ocr, then RapidOCR, then Tesseract.
+- Otherwise `Start.bat` creates a virtual environment, installs `requirements.txt`, and runs `python -m stratagems`. Learn tags arrow shapes from your screen. Scan matches those saved shapes. It does not call an OCR engine.
 - Or download `HelldiversStratagemWheel.exe` from the Windows exe workflow and double-click it. GitHub runs `.github/workflows/windows-exe.yml`. Origin runs `.depot/workflows/windows-exe.yml`.
 
 ## Windows
 
 Download `HelldiversStratagemWheel.exe` and double-click it. Python does not need to be installed.
 
-The first launch unpacks a private runtime under `%LOCALAPPDATA%\HelldiversStratagemWheel` and opens Stratagem Terminal in live mode. Hold **Mouse3** to open the wheel. **Mouse4** scans the list once for the mission. Later launches reuse that folder when the bundled version has not changed.
+The first launch unpacks a private runtime under `%LOCALAPPDATA%\HelldiversStratagemWheel` and opens Stratagem Terminal in live mode. Hold **Mouse3** to open the wheel. **Mouse5** learns arrow shapes. **Mouse4** scans the list once for the mission. Later launches reuse that folder when the bundled version has not changed.
 
-Arrow codes are matched by shape when the glyphs classify. Otherwise the packaged app reads names with Windows.Media.Ocr, then RapidOCR (ONNX). If both return nothing and the crop still looks like text, it uses the bundled Tesseract and `eng.traineddata`. A scan that finds nothing says why in the terminal. Opening the wheel does not scan.
+A scan compares each arrow glyph to the shapes saved by Learn. It does not call Windows OCR, RapidOCR, or Tesseract. With no samples saved, it tells you to run Learn and leaves the loadout alone. A glyph that matches nothing names the row and keeps the previous loadout. Opening the wheel does not scan.
 
 The file is unsigned. SmartScreen may ask you to confirm it.
 
@@ -54,7 +54,7 @@ Windows:
 pip install -r requirements.txt
 ```
 
-Linux (demo and tests) still uses Tesseract when a name has to be read:
+Linux (demo and tests) can still run Tesseract for the standalone line reader. A mission scan does not call it:
 
 ```bash
 source .venv/bin/activate
@@ -85,12 +85,15 @@ The settings window is a normal window titled Stratagem Terminal. The wheel is a
 | Action | Default |
 | --- | --- |
 | Open the wheel | Hold **Mouse3** (middle mouse) |
+| Learn arrow shapes | **Mouse5** |
 | Rescan the list | **Mouse4** |
 | Stratagem modifier | **Left Control** |
 | Direction keys | Arrow keys |
 | Cancel | Release in the center deadzone, or **Escape** |
 
-Hold the radial bind. The wheel opens at the center of the monitor that contains the cursor and stays there until you release. It shows the last successful scan. It does not capture the screen. Press the scan bind (Mouse4 by default), or **SCAN** in the terminal, to read the calibrated region once. That loadout stays until the next press. The OS cursor hides while the wheel bind is held. Aim with the mouse: each movement is added to a virtual offset from the spot where you pressed, and the cursor is warped back there so a game camera does not spin. A line on the wheel runs from the center to a dot at that offset. The line grows toward the highlighted wedge and shrinks back to the center inside the deadzone. The dot stays on the wheel; the wedge still uses the real offset. That line is the only aim indicator. Release outside the center deadzone to type that stratagem. Release inside the deadzone, or press Escape, to cancel. Releasing shows the cursor again on the saved spot.
+Hold the radial bind. The wheel opens at the center of the monitor that contains the cursor and stays there until you release. It shows the last successful scan. It does not capture the screen. Press the scan bind (Mouse4 by default), or **SCAN** in the terminal, to match the calibrated region once against the shapes Learn saved. That loadout stays until the next press. The OS cursor hides while the wheel bind is held: on Windows that repeats ShowCursor until the display count is negative, and the overlay uses a blank cursor. Aim with the mouse: each movement is added to a virtual offset from the spot where you pressed, and the cursor is warped back there so a game camera does not spin. The warp's own mouse event is ignored. A line on the wheel runs from the center to a dot at that offset, clamped to the wheel radius. Moving back toward the center shortens the stored offset, so the line shrinks. Inside the deadzone the line is short. The dot stays on the wheel; the wedge still uses the real offset. That line is the only aim indicator. Release outside the center deadzone to type that stratagem. Release inside the deadzone, or press Escape, to cancel. Releasing shows the cursor again on the saved spot.
+
+**Transparent wheel** is off by default. When it is on, each wedge keeps its yellow outline and the fill is see-through. The backing, the gaps, and the hazard frame use a transparent color key. Labels and the center readout stay readable.
 
 Rebind from the terminal: click REBIND, then press Mouse3, Mouse4, Mouse5, or any keyboard key. Escape cancels the capture. The new bind is written immediately.
 
@@ -111,30 +114,31 @@ Those defaults are a human-speed cadence a game sample can register. Raise them 
 
 The DRY RUN section prints the exact timestamps and keys for any stratagem in the table. It does not type them.
 
-## Calibrate OCR
+## Learn and scan
 
 Until a region is saved, the wheel shows **NOT CALIBRATED — SAMPLE LOADOUT** and a built-in sample (Reinforce, Resupply, SoS Beacon, Eagle Rearm, Eagle Airstrike, Eagle 500kg Bomb, Orbital Precision Strike, Hellbomb, SEAF Artillery, Machine Gun). You can use that wheel immediately.
 
 To read the list from the game:
 
-1. Open the stratagem menu in Helldivers 2 so the names and arrow codes are on screen.
+1. Open the stratagem menu in Helldivers 2 so the arrow codes are on screen.
 2. In Stratagem Terminal, click **CALIBRATE**.
-3. Drag a rectangle around that list, including each name and its arrows. Save.
-4. Press the scan bind (Mouse4) or click **SCAN**. That reads the rectangle once and stores the loadout for the mission.
+3. Drag a rectangle around that list, including each row of arrows. Save.
+4. Press **Mouse5** or click **LEARN**. Each unique arrow shape is shown. Tag it Up, Down, Left, or Right. Save. Those patches are stored in the config file.
+5. Press the scan bind (Mouse4) or click **SCAN**. That matches every glyph to the saved patches and maps the code through the catalog.
 
-**SCAN**, or the scan bind, reads that region once. Opening the wheel does not. The HDR preview uses that same capture, or a new one when you click **AUTO** or release a slider. It does not keep capturing while the window is open, and it does not replace the saved loadout.
+**SCAN**, or the scan bind, reads that region once. Opening the wheel does not. If no samples are saved, the scan tells you to run Learn and does not guess. If a glyph matches nothing, the terminal names that row and keeps the previous loadout. The HDR preview uses the scan capture, or a new one when you click **AUTO** or release a slider. It does not keep capturing while the window is open, and it does not replace the saved loadout.
 
 ### Windows HDR
 
 An HDR desktop can hand that same rectangle back flat, dark, or blown out. Under **HDR**, next to the region controls, turn on **Adjust captures before reading**. The preview shows each segmented arrow glyph and the direction the matcher chose. The curve, when HDR is on, is applied before that segmentation. The image updates when you scan, click **AUTO**, or release a slider. It does not refresh on a timer. **AUTO** sets exposure, gamma, contrast, and black level from one crop's histogram. Move the sliders if a glyph is still soft. The toggle and the four values are saved in the config file.
 
-A scan keeps an arrow code only when the glyphs classify above the confidence threshold. Real Helldivers arrows are not required to match the synthetic triangle templates. If they do not, the same capture is read as names: Windows.Media.Ocr, then RapidOCR, then Tesseract when the crop still contains text. The catalog supplies the code for a recognized name. Samples of each direction are stored after an arrow hit and reused on the next scan. If two stratagems share a code, an icon patch stored from an earlier recognition breaks the tie. A scan that finds nothing leaves the last loadout in place when there is one, and the terminal says whether the capture had no rows, low arrow confidence, or no text. The HDR preview still updates only when you scan, click **AUTO**, or release a slider.
+Learn segments glyphs after the HDR curve when HDR is on. A scan classifies every glyph by normalized comparison to the patches you tagged. It does not call an OCR engine, and it does not guess a direction from triangle geometry. If two stratagems share a code, an icon patch stored from an earlier sample match breaks the tie. A scan that finds nothing leaves the last loadout in place when there is one. The HDR preview still updates only when you scan, click **AUTO**, or release a slider. It does not refresh on a timer.
 
 The wheel shows up to 12 stratagems, which covers a normal loadout plus mission stratagems.
 
 ## Manual loadout
 
-Turn on **Manual override**, then pin stratagems from the checklist. The wheel uses that list and skips OCR. Pin order is the order you check them. Past 12, the wheel keeps the first 12.
+Turn on **Manual override**, then pin stratagems from the checklist. The wheel uses that list and skips the scan. Pin order is the order you check them. Past 12, the wheel keeps the first 12.
 
 ## Config
 
@@ -158,7 +162,7 @@ pip install pytest
 pytest
 ```
 
-The tests cover sequence timing, fuzzy name matching, arrow-shape codes, the aim line staying on the wheel, hiding the cursor for a hold, centering the wheel on the monitor under the cursor, summing mouse deltas across a cursor warp, and that opening the wheel does not scan. They do not need the game.
+The tests cover sequence timing, fuzzy name matching, learned arrow samples (including a thick chevron), the aim line shrinking inside the deadzone, hiding the cursor for a hold, centering the wheel on the monitor under the cursor, summing mouse deltas across a cursor warp, and that opening the wheel does not scan. They do not need the game.
 
 ## What this will not do
 

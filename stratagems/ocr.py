@@ -70,7 +70,7 @@ def scan_image(
     glyph_lut: dict[str, list[str]] | None = None,
     icon_lut: dict[str, str] | None = None,
 ) -> ScanResult:
-    """Read a mission loadout. Arrow shapes supply the code. OCR is names only."""
+    """Read a mission loadout by comparing glyphs to saved arrow samples."""
     return read_loadout(
         image,
         hdr=hdr,

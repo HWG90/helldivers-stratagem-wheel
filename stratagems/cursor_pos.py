@@ -14,6 +14,7 @@ import ctypes
 import ctypes.util
 import sys
 import threading
+from collections.abc import Callable
 from ctypes import wintypes
 
 from pynput.mouse import Controller
@@ -21,6 +22,30 @@ from pynput.mouse import Controller
 
 class _POINT(ctypes.Structure):
     _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
+_SHOW_CURSOR_LIMIT = 64
+
+
+def conceal_cursor(hide_once: Callable[[], int]) -> int:
+    """Call ShowCursor(FALSE) until the display count is negative.
+
+    The counter is sticky. One FALSE leaves the cursor visible when the
+    count started above zero.
+    """
+    steps = 0
+    while steps < _SHOW_CURSOR_LIMIT:
+        count = int(hide_once())
+        steps += 1
+        if count < 0:
+            return steps
+    return steps
+
+
+def reveal_cursor(show_once: Callable[[], int], steps: int) -> None:
+    """Undo the FALSE calls from ``conceal_cursor`` and no more."""
+    for _ in range(max(0, steps)):
+        show_once()
 
 
 class _Win32Cursor:
@@ -33,17 +58,19 @@ class _Win32Cursor:
         self._user32.ShowCursor.argtypes = [wintypes.BOOL]
         self._user32.ShowCursor.restype = ctypes.c_int
         self._visible = True
+        self._restore_steps = 0
 
     def hide(self) -> None:
         if not self._visible:
             return
-        self._user32.ShowCursor(False)
+        self._restore_steps = conceal_cursor(lambda: int(self._user32.ShowCursor(False)))
         self._visible = False
 
     def show(self) -> None:
         if self._visible:
             return
-        self._user32.ShowCursor(True)
+        reveal_cursor(lambda: int(self._user32.ShowCursor(True)), self._restore_steps)
+        self._restore_steps = 0
         self._visible = True
 
     def get(self) -> tuple[int, int]:
@@ -190,7 +217,11 @@ def set_cursor(x: int, y: int) -> None:
 
 
 def hide_cursor() -> None:
-    """Hide the OS cursor once. A second call does nothing until ``show_cursor``."""
+    """Hide the OS cursor. A second call does nothing until ``show_cursor``.
+
+    On Windows the hide repeats ShowCursor(FALSE) until the display count
+    is negative, then show restores that many TRUE calls.
+    """
     global _cursor_hidden
     with _visibility_lock:
         if _cursor_hidden:

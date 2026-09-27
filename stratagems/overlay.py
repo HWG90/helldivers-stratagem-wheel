@@ -24,6 +24,8 @@ WHEEL_Y = 430
 OUTER = 268
 INNER = 102
 DEADZONE = 90
+# Windows color key. It is not black, so labels and the center readout stay painted.
+TRANSPARENT_KEY = "#ff00ff"
 
 
 class RadialOverlay:
@@ -45,6 +47,7 @@ class RadialOverlay:
         self.highlight: int | None = None
         self.visible = False
         self.pointer_locked = False
+        self.transparent = False
         self._aim = (0.0, 0.0)
         self.external_bind = False
         self.center_screen = (0, 0)
@@ -89,6 +92,9 @@ class RadialOverlay:
         except tk.TclError:
             pass
         _no_activate(self.win)
+        self._apply_chrome()
+        if self.pointer_locked:
+            self.set_pointer_locked(True)
         self._redraw()
 
     def hide(self) -> None:
@@ -96,6 +102,22 @@ class RadialOverlay:
         self._aim = (0.0, 0.0)
         self.set_pointer_locked(False)
         self.win.withdraw()
+
+    def set_transparent(self, enabled: bool) -> None:
+        """Color-key the backing, gaps, and hazard frame. Wedge outlines stay."""
+        self.transparent = enabled
+        self._apply_chrome()
+        if self.visible:
+            self._redraw()
+
+    def _apply_chrome(self) -> None:
+        background = TRANSPARENT_KEY if self.transparent else BG
+        self.win.configure(bg=background)
+        self.canvas.configure(bg=background)
+        try:
+            self.win.attributes("-transparentcolor", TRANSPARENT_KEY if self.transparent else "")
+        except tk.TclError:
+            pass
 
     def set_pointer_locked(self, locked: bool) -> None:
         self.pointer_locked = locked
@@ -169,7 +191,8 @@ class RadialOverlay:
     def _redraw(self) -> None:
         canvas = self.canvas
         canvas.delete("all")
-        paint_hazard_border(canvas, SIZE, SIZE, band=18)
+        if not self.transparent:
+            paint_hazard_border(canvas, SIZE, SIZE, band=18, tags=("hazard",))
         canvas.create_text(
             SIZE / 2,
             40,
@@ -221,9 +244,21 @@ class RadialOverlay:
         pad = min(0.04, span * 0.12)
         center = wedge_center_angle(index, count)
         points = _arc_points(WHEEL_X, WHEEL_Y, INNER, OUTER, center - span / 2 + pad, center + span / 2 - pad)
+        if self.transparent:
+            # Stipple leaves the color key unpainted, so the game shows through the fill.
+            self.canvas.create_polygon(
+                points,
+                fill=YELLOW if selected else "#1A1A1A",
+                outline=YELLOW,
+                width=2,
+                stipple="gray75" if selected else "gray50",
+                tags="wedge",
+            )
+            self._draw_wedge_text(index, count, center, selected=selected)
+            return
         fill: str = YELLOW if selected else "#101010"
         outline: str = BLACK if selected else YELLOW
-        self.canvas.create_polygon(points, fill=fill, outline=outline, width=2)
+        self.canvas.create_polygon(points, fill=fill, outline=outline, width=2, tags="wedge")
         self._draw_wedge_text(index, count, center, selected=selected)
 
     def _draw_wedge_text(self, index: int, count: int, angle: float, *, selected: bool) -> None:
@@ -294,7 +329,7 @@ class RadialOverlay:
         )
 
     def _draw_aim(self) -> None:
-        """Line from the wheel center to the clamped virtual offset. No cursor sprite."""
+        """Line from the wheel center. Length is min(offset, wheel radius). No cursor sprite."""
         canvas = self.canvas
         canvas.delete("aim")
         dx, dy = self._aim

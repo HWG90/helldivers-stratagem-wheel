@@ -1,13 +1,15 @@
-"""Synthetic arrow strips decode without Tesseract, then again from the LUT."""
+"""Saved arrow samples decode a strip. A scan without samples does not guess."""
 
-import shutil
-
-import pytest
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
 from stratagems.catalog import get
-from stratagems.glyphs import arrow_preview, geometry_direction, read_loadout
-from stratagems.name_ocr import NameRead
+from stratagems.glyphs import (
+    arrow_preview,
+    cluster_glyphs,
+    geometry_direction,
+    lut_from_tags,
+    read_loadout,
+)
 from stratagems.ocr import scan_image
 
 
@@ -43,60 +45,6 @@ def _strip(directions: list[str], *, icon: bool = False) -> Image.Image:
     return image
 
 
-def test_triangle_strip_decodes_without_tesseract_then_from_the_lut(monkeypatch) -> None:
-    def refuse_ocr(*_args: object, **_kwargs: object) -> None:
-        raise AssertionError("name OCR ran")
-
-    monkeypatch.setattr("stratagems.glyphs.read_names", refuse_ocr)
-    monkeypatch.setattr("stratagems.ocr.pytesseract.image_to_data", refuse_ocr)
-    monkeypatch.setattr("stratagems.name_ocr.pytesseract.image_to_data", refuse_ocr)
-
-    code = ["up", "down", "right", "left", "up"]
-    image = _strip(code)
-    first = scan_image(image)
-    assert [entry.name for entry in first.entries] == ["Reinforce"]
-    assert list(first.entries[0].code) == code
-    assert first.entries[0].code_source == "screen"
-    assert first.reader == "arrows"
-    for direction in ("up", "down", "left", "right"):
-        assert first.glyph_lut[direction]
-
-    monkeypatch.setattr(
-        "stratagems.glyphs.geometry_direction",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("geometry ran on the second pass")),
-    )
-    second = scan_image(image, glyph_lut=first.glyph_lut, icon_lut=first.icon_lut)
-    assert list(second.entries[0].code) == code
-    assert second.entries[0].name == "Reinforce"
-
-    preview, summary = arrow_preview(image, glyph_lut=first.glyph_lut)
-    assert summary == "up down right left up"
-    assert preview.getpixel((preview.width // 2, image.height + 8)) != (8, 8, 8)
-
-
-def test_icon_lut_picks_the_stratagem_when_the_code_is_shared(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "stratagems.glyphs.read_names",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("name OCR ran")),
-    )
-    pods = get("Reinforcement Pods")
-    upload = get("Upload Data")
-    assert pods is not None and upload is not None
-    assert pods.code == upload.code
-    image = _strip(list(pods.code), icon=True)
-    learned = read_loadout(image, catalog=(pods,))
-    assert learned.entries[0].name == "Reinforcement Pods"
-    assert "Reinforcement Pods" in learned.icon_lut
-    confirmed = read_loadout(
-        image,
-        glyph_lut=learned.glyph_lut,
-        icon_lut=learned.icon_lut,
-        catalog=(pods, upload),
-    )
-    assert confirmed.entries[0].name == "Reinforcement Pods"
-    assert confirmed.entries[0].code == pods.code
-
-
 def _chevron_bits(size: int = 48, thick: int = 16) -> bytearray:
     """A thick right-pointing chevron. This is not a filled triangle."""
     bits = bytearray(size * size)
@@ -111,44 +59,178 @@ def _chevron_bits(size: int = 48, thick: int = 16) -> bytearray:
     return bits
 
 
-def test_chevron_glyph_is_not_required_to_match_synthetic_triangles() -> None:
-    bits = _chevron_bits()
-    assert geometry_direction(bits, 48, 48) is None
+def _rotate_ccw(bits: bytearray, size: int) -> bytearray:
+    out = bytearray(size * size)
+    for y in range(size):
+        for x in range(size):
+            if bits[y * size + x]:
+                out[(size - 1 - x) * size + y] = 1
+    return out
 
 
-def test_recognized_name_fills_the_loadout_when_arrow_classification_fails(monkeypatch) -> None:
-    monkeypatch.setattr("stratagems.glyphs.geometry_direction", lambda *_args, **_kwargs: None)
-
-    def names(_image: Image.Image) -> NameRead:
-        return NameRead(["Resupply"], "rapidocr")
-
-    monkeypatch.setattr("stratagems.glyphs.read_names", names)
-    image = _strip(["up", "down", "right", "left", "up"])
-    result = read_loadout(image)
-    resupply = get("Resupply")
-    assert resupply is not None
-    assert result.reader == "rapidocr"
-    assert result.entries[0].name == "Resupply"
-    assert result.entries[0].code == resupply.code
-    assert result.entries[0].code_source == "table"
-    assert result.failure == ""
+def _rotate_cw(bits: bytearray, size: int) -> bytearray:
+    out = bytearray(size * size)
+    for y in range(size):
+        for x in range(size):
+            if bits[y * size + x]:
+                out[x * size + (size - 1 - y)] = 1
+    return out
 
 
-@pytest.mark.skipif(shutil.which("tesseract") is None, reason="tesseract is not installed")
-def test_tesseract_reads_the_name_when_the_glyph_is_not_a_triangle() -> None:
-    bits = _chevron_bits()
-    assert geometry_direction(bits, 48, 48) is None
-    image = Image.new("RGB", (640, 120), (0, 0, 0))
-    draw = ImageDraw.Draw(image)
-    font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 48)
-    draw.text((24, 30), "RESUPPLY", fill=(255, 255, 255), font=font)
-    for y in range(48):
-        for x in range(48):
-            if bits[y * 48 + x]:
-                image.putpixel((520 + x, 36 + y), (255, 255, 255))
-    result = read_loadout(image)
-    resupply = get("Resupply")
-    assert resupply is not None
-    assert [entry.name for entry in result.entries] == ["Resupply"]
-    assert result.entries[0].code == resupply.code
-    assert result.reader == "tesseract"
+def _mirror(bits: bytearray, size: int) -> bytearray:
+    out = bytearray(size * size)
+    for y in range(size):
+        for x in range(size):
+            if bits[y * size + x]:
+                out[y * size + (size - 1 - x)] = 1
+    return out
+
+
+def _paint(bits: bytearray, size: int, origin: tuple[int, int], image: Image.Image) -> None:
+    ox, oy = origin
+    for y in range(size):
+        row = y * size
+        for x in range(size):
+            if bits[row + x]:
+                image.putpixel((ox + x, oy + y), (255, 255, 255))
+
+
+def _glyph_image(bits: bytearray, size: int = 48) -> Image.Image:
+    margin = 20
+    image = Image.new("RGB", (size + margin * 2, size + margin * 2), (0, 0, 0))
+    _paint(bits, size, (margin, margin), image)
+    return image
+
+
+def _sample(bits: bytearray, direction: str) -> str:
+    clusters = cluster_glyphs(_glyph_image(bits))
+    assert len(clusters) == 1
+    tagged = lut_from_tags(clusters, [direction])
+    return tagged[direction][0]
+
+
+def _chevron_lut() -> tuple[dict[str, list[str]], dict[str, bytearray]]:
+    size = 48
+    right_thick = _chevron_bits(size, 16)
+    right_thicker = _chevron_bits(size, 22)
+    drawn = {
+        "right": (right_thick, right_thicker),
+        "left": (_mirror(right_thick, size), _mirror(right_thicker, size)),
+        "up": (_rotate_ccw(right_thick, size), _rotate_ccw(right_thicker, size)),
+        "down": (_rotate_cw(right_thick, size), _rotate_cw(right_thicker, size)),
+    }
+    lut: dict[str, list[str]] = {}
+    first: dict[str, bytearray] = {}
+    for direction, (thin, thick) in drawn.items():
+        assert geometry_direction(thin, size, size) is None
+        assert geometry_direction(thick, size, size) is None
+        first_patch = _sample(thin, direction)
+        second_patch = _sample(thick, direction)
+        assert first_patch != second_patch
+        lut[direction] = [first_patch, second_patch]
+        first[direction] = thin
+    return lut, first
+
+
+def _chevron_strip(directions: list[str], glyphs: dict[str, bytearray], *, size: int = 48) -> Image.Image:
+    gap = 18
+    margin = 20
+    width = margin + len(directions) * (size + gap)
+    image = Image.new("RGB", (width, size + margin * 2), (0, 0, 0))
+    x = margin
+    for direction in directions:
+        _paint(glyphs[direction], size, (x, margin), image)
+        x += size + gap
+    return image
+
+
+def _refuse_ocr(*_args: object, **_kwargs: object) -> None:
+    raise AssertionError("OCR ran")
+
+
+def _refuse_geometry(*_args: object, **_kwargs: object) -> None:
+    raise AssertionError("geometry ran")
+
+
+def test_saved_chevrons_decode_a_catalog_stratagem_without_ocr(monkeypatch) -> None:
+    monkeypatch.setattr("stratagems.glyphs.geometry_direction", _refuse_geometry)
+    monkeypatch.setattr("stratagems.name_ocr.read_names", _refuse_ocr)
+    monkeypatch.setattr("stratagems.ocr.pytesseract.image_to_data", _refuse_ocr)
+    lut, glyphs = _chevron_lut()
+    code = ["up", "down", "right", "left", "up"]
+    image = _chevron_strip(code, glyphs)
+    result = scan_image(image, glyph_lut=lut)
+    reinforce = get("Reinforce")
+    assert reinforce is not None
+    assert [entry.name for entry in result.entries] == ["Reinforce"]
+    assert list(result.entries[0].code) == list(reinforce.code)
+    assert result.entries[0].code_source == "screen"
+    assert result.reader == "samples"
+    for direction in ("up", "down", "left", "right"):
+        assert len(lut[direction]) == 2
+
+    preview, summary = arrow_preview(image, glyph_lut=lut)
+    assert summary == "up down right left up"
+    assert preview.getpixel((preview.width // 2, image.height + 8)) != (8, 8, 8)
+
+
+def test_scan_without_samples_tells_the_user_to_learn(monkeypatch) -> None:
+    monkeypatch.setattr("stratagems.glyphs.geometry_direction", _refuse_geometry)
+    monkeypatch.setattr("stratagems.name_ocr.read_names", _refuse_ocr)
+    monkeypatch.setattr("stratagems.ocr.pytesseract.image_to_data", _refuse_ocr)
+    result = read_loadout(_strip(["up", "down", "right", "left", "up"]))
+    assert result.entries == []
+    assert "Learn" in result.failure
+
+
+def test_an_unmatched_glyph_names_the_row_and_returns_nothing(monkeypatch) -> None:
+    monkeypatch.setattr("stratagems.name_ocr.read_names", _refuse_ocr)
+    lut, _glyphs = _chevron_lut()
+    size = 48
+    ring = bytearray(size * size)
+    for y in range(size):
+        for x in range(size):
+            if min(x, y, size - 1 - x, size - 1 - y) < 6:
+                ring[y * size + x] = 1
+    gap = 18
+    margin = 20
+    width = margin + 5 * (size + gap)
+    image = Image.new("RGB", (width, size + margin * 2), (0, 0, 0))
+    x = margin
+    for _index in range(5):
+        _paint(ring, size, (x, margin), image)
+        x += size + gap
+    result = read_loadout(image, glyph_lut=lut)
+    assert result.entries == []
+    assert result.failure == "Row 1 has an arrow that does not match a saved sample."
+
+
+def test_icon_lut_picks_the_stratagem_when_the_code_is_shared(monkeypatch) -> None:
+    monkeypatch.setattr("stratagems.name_ocr.read_names", _refuse_ocr)
+    monkeypatch.setattr("stratagems.ocr.pytesseract.image_to_data", _refuse_ocr)
+    lut = {
+        direction: [_sample_triangle(direction)]
+        for direction in ("up", "down", "left", "right")
+    }
+    pods = get("Reinforcement Pods")
+    upload = get("Upload Data")
+    assert pods is not None and upload is not None
+    assert pods.code == upload.code
+    image = _strip(list(pods.code), icon=True)
+    learned = read_loadout(image, glyph_lut=lut, catalog=(pods,))
+    assert learned.entries[0].name == "Reinforcement Pods"
+    assert "Reinforcement Pods" in learned.icon_lut
+    confirmed = read_loadout(
+        image,
+        glyph_lut=lut,
+        icon_lut=learned.icon_lut,
+        catalog=(pods, upload),
+    )
+    assert confirmed.entries[0].name == "Reinforcement Pods"
+    assert confirmed.entries[0].code == pods.code
+
+
+def _sample_triangle(direction: str) -> str:
+    clusters = cluster_glyphs(_strip([direction]))
+    assert len(clusters) == 1
+    return lut_from_tags(clusters, [direction])[direction][0]

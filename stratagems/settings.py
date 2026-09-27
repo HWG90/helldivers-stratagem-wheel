@@ -46,6 +46,7 @@ _IDLE = "Press Scan or the scan bind to capture this region."
 class SettingsHooks:
     on_changed: Callable[[], None]
     on_rescan: Callable[[], None]
+    on_learn: Callable[[], None]
     on_preview: Callable[[], None]
     arm_capture: Callable[[Callable[[str | None], None]], None]
 
@@ -101,6 +102,7 @@ class SettingsWindow:
         body = self._scrolling_body()
 
         self._build_binds(body)
+        self._build_wheel(body)
         self._build_input(body)
         self._build_calibration(body)
         self._build_hdr(body)
@@ -173,11 +175,14 @@ class SettingsWindow:
         frame = self._section(parent, "BINDS")
         self._bind_row(frame, "Radial trigger", "radial_bind")
         self._bind_row(frame, "Rescan", "rescan_bind")
+        self._bind_row(frame, "Learn arrows", "learn_bind")
         self._bind_row(frame, "Stratagem modifier", "modifier")
         body_label(
             frame,
             "Hold the radial bind to open the wheel at the center of the monitor under the cursor. "
-            "The wheel uses the last scan. The scan bind, or SCAN, reads the list once for this mission. "
+            "The wheel uses the last scan. It does not capture the screen. "
+            "Mouse5, or LEARN, tags arrow shapes from the list. Mouse4, or SCAN, matches those saved shapes once. "
+            "The preview does not refresh on a timer. "
             "The OS cursor hides while you hold the wheel. A line from the wheel center to a dot shows the aim. "
             "Release on a wedge to type that code. Release in the center, or press Escape, to cancel. "
             "Rebind accepts mouse buttons and keys.",
@@ -185,6 +190,39 @@ class SettingsWindow:
             fg=DIM,
             size=8,
         ).pack(anchor="w", pady=(4, 0))
+
+    def _build_wheel(self, parent: tk.Misc) -> None:
+        frame = self._section(parent, "WHEEL")
+        self.transparent_var = tk.BooleanVar(value=self.config.transparent_wheel)
+        tk.Checkbutton(
+            frame,
+            text="Transparent wheel",
+            variable=self.transparent_var,
+            command=self._on_transparent,
+            bg=BG,
+            fg=WHITE,
+            selectcolor=YELLOW,
+            activebackground=BG,
+            activeforeground=YELLOW,
+            font=(self.family, 10),
+            highlightthickness=0,
+            anchor="w",
+        ).pack(anchor="w")
+        body_label(
+            frame,
+            "Off by default. When on, each wedge keeps its yellow outline and the fill is see-through. "
+            "The backing, the gaps, and the hazard frame are a transparent color key. "
+            "Labels and the center readout stay readable.",
+            self.family,
+            fg=DIM,
+            size=8,
+        ).pack(anchor="w", pady=(4, 0))
+
+    def _on_transparent(self) -> None:
+        if self._loading:
+            return
+        self.config.transparent_wheel = bool(self.transparent_var.get())
+        self.hooks.on_changed()
 
     def _bind_row(self, parent: tk.Misc, label: str, field: str) -> None:
         row = tk.Frame(parent, bg=BG)
@@ -305,7 +343,8 @@ class SettingsWindow:
         row.pack(anchor="w", pady=4)
         yellow_button(row, "CALIBRATE", self._calibrate, self.family).pack(side="left")
         yellow_button(row, "CLEAR", self._clear_region, self.family).pack(side="left", padx=8)
-        yellow_button(row, "SCAN", self.hooks.on_rescan, self.family).pack(side="left")
+        yellow_button(row, "LEARN", self.hooks.on_learn, self.family).pack(side="left")
+        yellow_button(row, "SCAN", self.hooks.on_rescan, self.family).pack(side="left", padx=8)
 
     def _refresh_region(self) -> None:
         region = self.config.region
@@ -629,7 +668,7 @@ class SettingsWindow:
         self.manual_var = tk.BooleanVar(value=self.config.manual_override)
         tk.Checkbutton(
             frame,
-            text="Manual override — pin stratagems and skip OCR",
+            text="Manual override — pin stratagems and skip the scan",
             variable=self.manual_var,
             command=self._on_manual,
             bg=BG,

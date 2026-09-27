@@ -12,7 +12,7 @@ Caption "Helldivers Stratagem Wheel"
 InstallDir "$LOCALAPPDATA\HelldiversStratagemWheel"
 
 !ifndef APP_VERSION
-  !define APP_VERSION "1.0.8"
+  !define APP_VERSION "1.0.9"
 !endif
 
 !ifndef PAYLOAD

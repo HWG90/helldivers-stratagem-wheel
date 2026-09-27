@@ -21,7 +21,9 @@ from stratagems.catalog import MAX_WHEEL, LoadoutEntry, get, sample_loadout
 from stratagems.config import Config, load_config, save_config
 from stratagems.cursor_pos import get_cursor, hide_cursor, set_cursor, show_cursor
 from stratagems.listen import InputListener
-from stratagems.hdr import curve_from_config
+from stratagems.glyphs import cluster_glyphs
+from stratagems.hdr import HdrCurve, curve_from_config
+from stratagems.learn import LearnWindow
 from stratagems.ocr import OcrError, ScanResult, capture_region, save_bbox, scan_image
 from stratagems.overlay import WHEEL_X, WHEEL_Y, RadialOverlay
 from stratagems.placement import Monitor, list_monitors, wheel_top_left
@@ -46,6 +48,7 @@ class App:
         )
         self._held_offset = (0, 0)
         self._scan_gen = 0
+        self._learn_window: LearnWindow | None = None
         self._cache: list[LoadoutEntry] = []
         self._cache_notice = ""
         self._scan_failure = ""
@@ -66,12 +69,14 @@ class App:
             SettingsHooks(
                 on_changed=self._on_changed,
                 on_rescan=self.rescan,
+                on_learn=self.learn,
                 on_preview=self.preview,
                 arm_capture=self.arm_capture,
             ),
             demo=demo,
         )
         self.overlay = RadialOverlay(self.root, on_confirm=self._confirm_current, on_cancel=self._cancel_wheel)
+        self.overlay.set_transparent(self.config.transparent_wheel)
         self.root.protocol("WM_DELETE_WINDOW", self.root.quit)
         self._set_initial_status()
 
@@ -99,7 +104,7 @@ class App:
 
     def rescan(self) -> None:
         if self.config.manual_override:
-            self.settings.set_status("Manual override is on, so OCR is skipped.")
+            self.settings.set_status("Manual override is on, so the scan is skipped.")
             return
         if self.config.region is None:
             self.settings.set_status("Calibrate the stratagem list before scanning.")
@@ -157,6 +162,55 @@ class App:
             )
 
         threading.Thread(target=work, daemon=True).start()
+
+    def learn(self) -> None:
+        """Capture arrow glyphs once and ask the user to tag each unique shape."""
+        region = self.config.region
+        if region is None:
+            self.settings.set_status("Calibrate the stratagem list before Learn.")
+            return
+        hdr = self.config.hdr
+        curve = curve_from_config(self.config)
+        self.settings.set_status("Reading arrow shapes to learn…")
+
+        def work() -> None:
+            try:
+                image: Image.Image | None = capture_region(region.left, region.top, region.width, region.height)
+                error = None
+            except (OcrError, OSError) as exc:
+                image = None
+                error = str(exc)
+            self._later(
+                lambda image=image, error=error: self._open_learn(image, error, hdr, curve)
+            )
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _open_learn(
+        self,
+        image: Image.Image | None,
+        error: str | None,
+        hdr: bool,
+        curve: HdrCurve,
+    ) -> None:
+        if error or image is None:
+            message = error or "Could not capture the stratagem list."
+            self.settings.set_status(message)
+            self.settings.append_log(message)
+            return
+        clusters = cluster_glyphs(image, hdr=hdr, curve=curve)
+        if not clusters:
+            self.settings.set_status("Learn found no arrow glyphs in the calibrated region.")
+            return
+        self._learn_window = LearnWindow(self.root, clusters, self._save_learned)
+        self.settings.set_status(f"Tag {len(clusters)} arrow shapes, then save.")
+
+    def _save_learned(self, glyph_lut: dict[str, list[str]]) -> None:
+        self.config.glyph_lut = glyph_lut
+        save_config(self.config)
+        count = sum(len(samples) for samples in glyph_lut.values())
+        self.settings.set_status(f"Saved {count} arrow samples. Scan will use these shapes.")
+        self.settings.append_log(f"Learn saved {count} arrow samples.")
 
     def _open_demo(self) -> None:
         self.overlay.set_pointer_locked(False)
@@ -312,6 +366,7 @@ class App:
 
     def _on_changed(self) -> None:
         path = save_config(self.config)
+        self.overlay.set_transparent(self.config.transparent_wheel)
         self.settings.set_status(f"Saved {path}")
         if self.overlay.visible:
             entries, notice = self._immediate_state()
@@ -356,6 +411,8 @@ class App:
             return
         if name == self.config.rescan_bind and pressed:
             self.rescan()
+        if name == self.config.learn_bind and pressed:
+            self.learn()
 
     def _on_key(self, name: str, pressed: bool) -> None:
         if self._capture_ready and pressed:
@@ -373,6 +430,8 @@ class App:
             return
         if name == self.config.rescan_bind and pressed:
             self.rescan()
+        if name == self.config.learn_bind and pressed:
+            self.learn()
 
     def _finish_capture(self, name: str | None) -> None:
         callback = self._capture_cb
@@ -475,7 +534,7 @@ class App:
             )
             return
         self.settings.set_status(
-            "Hold Mouse3 to open the wheel at the center of your monitor. Mouse4 rescans. Escape cancels."
+            "Hold Mouse3 to open the wheel. Mouse5 learns arrow shapes. Mouse4 scans. Escape cancels."
         )
 
 
