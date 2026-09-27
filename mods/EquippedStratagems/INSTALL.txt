@@ -7,11 +7,14 @@ Writes the currently equipped stratagems, one catalog name per line, to:
 The file is rewritten when that loadout changes, and again when the
 Send Strategems binding fires. Install this zip next to Bingus Shared Loader
 and Mod Bindings Menu. The loader discovers the plaintext entry
-mods/EquippedStratagems/EquippedStratagems. The mod reads
-script/lua/player and script/lua/player_hud with
-stingray.Application.can_get('lua', name) and require, then writes catalog
-names through CowboyBingusModLoader.open_log. It registers Send Strategems
-with ModBindingsMenu.register_binding. It does not scan memory or hide itself.
+mods/EquippedStratagems/EquippedStratagems. If mods/codex/loadouts is
+already loaded and holds one catalog-name array, that array is written.
+Otherwise the mod reads game.dll the same way BetterStratagemBounce and
+ReinforcementBeaconsFixed do: GetModuleHandleA and ReadProcessMemory.
+Local player *(game+0x3326468), StratagemInfo *(game+0x348e8f8),
+equipped rows *(game+0x33266b0). Names go through
+CowboyBingusModLoader.open_log. It registers Send Strategems with
+ModBindingsMenu.register_binding. It does not patch code or hide itself.
 
 1. Close Helldivers 2. Use one mod manager, Arsenal or HD2MM.
 2. Import Bingus Shared Loader v15 or newer (v18 is the current API 1 release),
@@ -27,9 +30,8 @@ with ModBindingsMenu.register_binding. It does not scan memory or hide itself.
 6. On the MODS tab, bind Send Strategems. That key is stored by Mod Bindings
    Menu, not by a separate settings file.
 
-Names come from script/lua/player (then script/lua/player_hud). A list that
-does not match the catalog leaves the previous log in place. If those modules
-are not available, the stratagem wheel keeps Learn and Scan.
+A list that does not match the catalog leaves the previous log in place.
+If the player state is unreadable, the stratagem wheel keeps Learn and Scan.
 
 https://github.com/CowboyBingus/BingusSharedLoader/releases/latest
 https://github.com/CowboyBingus/ModBindingsMenu/releases/latest

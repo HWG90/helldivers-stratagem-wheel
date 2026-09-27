@@ -126,7 +126,9 @@ Bingus Shared Loader and Mod Bindings Menu do not write `StratagemSlots.log`. Th
 
 `%LOCALAPPDATA%\CowboyBingus\Helldivers2\Logs\EquippedStratagems.log`
 
-EquippedStratagems is a normal disclosed Helldivers 2 mod. It does not scan memory, patch code, or hide itself. Bingus Shared Loader discovers `mods/EquippedStratagems/EquippedStratagems`. On each update the mod reads the equipped list from the game modules `script/lua/player` and `script/lua/player_hud`: `stingray.Application.can_get('lua', name)` then `require`, which is how the loader loads a Lua resource. Names are written as catalog names, one per line, and the log is rewritten when that list changes. A list that matches nothing leaves the previous file alone.
+EquippedStratagems is a normal disclosed Helldivers 2 mod. Bingus Shared Loader discovers `mods/EquippedStratagems/EquippedStratagems`. On each update it writes catalog names, one per line, and rewrites the log when that list changes. A list that matches nothing leaves the previous file alone. An empty known list clears the file.
+
+If `mods/codex/loadouts` is already loaded and holds exactly one array of catalog names, that array is the equipped list. The mod does not call into it. Otherwise it reads player state the same way the other disclosed mods do: `GetModuleHandleA("game.dll")` and `ReadProcessMemory`. The local player is `*(game+0x3326468)`, with the owned entity at `+0xe8`. Stratagem names come from the StratagemInfo settings buffer at `*(game+0x348e8f8)` (400-byte records, kind at the start, pointer table at `game+0x37cb600`). The equipped rows are the stratagem list at `*(game+0x33266b0)` (count at `+0x34`, rows of 64 bytes, kind at `+12`). It does not patch code or hide itself.
 
 It also registers a Mod Bindings Menu binding with `ModBindingsMenu.register_binding('equippedstratagems.send_strategems', 'Send Strategems', nil, {category = 'EquippedStratagems'})`. When **Send Strategems** fires, the same read runs and the log is written. The saved key lives in Mod Bindings Menu's own assignment table. Set the key on the MODS tab. The stratagem wheel program itself still does not attach to the game.
 

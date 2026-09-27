@@ -102,7 +102,7 @@ def test_empty_log_keeps_the_scan_path(tmp_path, monkeypatch) -> None:
         app.root.destroy()
 
 
-def test_addon_uses_the_loader_log_and_does_not_scan_memory() -> None:
+def test_addon_uses_the_loader_log_and_reads_player_state() -> None:
     source = MOD_LUA.read_text(encoding="utf-8")
     assert source.startswith(f"-- HD2-Addon: {RESOURCE}\n")
     assert len(f"-- HD2-Addon: {RESOURCE}\n".encode()) <= 256
@@ -110,12 +110,19 @@ def test_addon_uses_the_loader_log_and_does_not_scan_memory() -> None:
     assert "CowboyBingusModLoader" in source
     assert "open_log" in source
     assert "print('[EquippedStratagems] loaded')" in source
-    assert "script/lua/player" in source
-    assert "stingray.Application.can_get" in source or "app.can_get" in source
+    assert "mods/codex/loadouts" in source
+    assert "0x348e8f8" in source
+    assert "0x37cb600" in source
+    assert "0x3326468" in source
+    assert "0x33266b0" in source
+    assert "GetModuleHandleA" in source
+    assert "ReadProcessMemory" in source
     assert "register_binding" in source
+    assert "equippedstratagems.send_strategems" in source
     assert "Send Strategems" in source
+    assert "script/lua/player" not in source
     lowered = source.lower()
-    for banned in ("readprocessmemory", "virtualquery", "getmodulehandle", "sigscan", "aob", "ffi"):
+    for banned in ("virtualquery", "writeprocessmemory", "virtualprotect", "sigscan", "aob"):
         assert banned not in lowered
     pairs = dict(re.findall(r'\["([^"]+)"\] = "([^"]+)"', source))
     expected = {
@@ -183,31 +190,141 @@ for line in io.lines(alias_file) do
         error('catalog mismatch for [' .. alias .. '] got ' .. tostring(got))
     end
 end
+local GAME = 0x10000000
+local BUFFER = 0x20000000
+local PM = 0x30000000
+local ENTITY = 0x31000000
+local SM = 0x32000000
+local ROWS = 0x33000000
+local function u32s(n)
+    return string.char(
+        n % 256,
+        math.floor(n / 256) % 256,
+        math.floor(n / 65536) % 256,
+        math.floor(n / 16777216) % 256)
+end
+local function u64s(n) return u32s(n) .. u32s(0) end
+local function overlay(buf, offset, bytes)
+    return buf:sub(1, offset) .. bytes .. buf:sub(offset + #bytes + 1)
+end
+local group_sizes = {7204, 1184, 5860, 5228, 19152, 7040, 3832, 18344, 4884, 1104, 6444}
+local group_counts = {13, 2, 11, 9, 36, 13, 7, 34, 9, 2, 13}
+local named = {[1] = '500kg', [2] = 'Autocannon'}
+local parts, table_slots = {}, {}
+local function add(bytes) parts[#parts + 1] = bytes end
+add(u32s(11))
+local offset, kind = 4, 0
+for group = 1, 11 do
+    local size, count = group_sizes[group], group_counts[group]
+    add(u32s(0x444C444C))
+    add(u32s(1))
+    add(u32s(0x30EB6399))
+    add(u32s(size - 24))
+    add(u32s(1))
+    add(u32s(0))
+    add(u64s(BUFFER + offset + 40))
+    add(u32s(count))
+    add(u32s(0))
+    for index = 0, count - 1 do
+        kind = kind + 1
+        local record_at = offset + 40 + index * 400
+        table_slots[kind] = BUFFER + record_at
+        add(u32s(kind))
+        local label = named[kind]
+        if label then
+            add(label)
+            add(string.char(0))
+            add(string.rep(string.char(255), 400 - 4 - #label - 1))
+        else
+            add(string.rep(string.char(255), 396))
+        end
+    end
+    add(string.rep(string.char(255), size - (40 + count * 400)))
+    offset = offset + size
+end
+local settings = table.concat(parts)
+assert(#settings == 80280 and kind == 149, 'settings image does not match the stratagem buffer')
+local table_parts = {}
+for slot = 0, 149 do table_parts[slot + 1] = u64s(table_slots[slot] or 0) end
+local settings_table = table.concat(table_parts)
+local player = overlay(overlay(string.rep('\0', 0x100), 0x84, u32s(1) .. u32s(1)), 0xe8, u64s(ENTITY))
+local entity = overlay(string.rep('\0', 24), 20, '\1')
+local regions = {
+    {addr = GAME + 0x348e8f8, bytes = u64s(BUFFER)},
+    {addr = GAME + 0x37cb600, bytes = settings_table},
+    {addr = GAME + 0x3326468, bytes = u64s(PM)},
+    {addr = BUFFER, bytes = settings},
+    {addr = PM, bytes = player},
+    {addr = ENTITY, bytes = entity},
+}
+local function read_region(addr, size)
+    for index = #regions, 1, -1 do
+        local region = regions[index]
+        local delta = addr - region.addr
+        if delta >= 0 and delta + size <= #region.bytes then
+            return region.bytes:sub(delta + 1, delta + size)
+        end
+    end
+    return nil
+end
+local function use_rows(kinds, text)
+    local rows = {}
+    for _, row_kind in ipairs(kinds) do
+        local row = string.rep('\0', 64)
+        row = overlay(row, 12, u32s(row_kind))
+        if text then row = overlay(row, 16, text .. '\0') end
+        rows[#rows + 1] = row
+    end
+    local row_bytes = table.concat(rows)
+    local manager = overlay(overlay(string.rep('\0', 0x80), 0x34, u32s(#kinds)), 0x78, u64s(ROWS))
+    regions[#regions + 1] = {addr = GAME + 0x33266b0, bytes = u64s(SM)}
+    regions[#regions + 1] = {addr = SM, bytes = manager}
+    regions[#regions + 1] = {addr = ROWS, bytes = row_bytes}
+    _G.EquippedStratagemsReader = {
+        module = function(name) assert(name == 'game.dll'); return GAME end,
+        read = read_region,
+        pointer = function(bytes, pointer_offset)
+            pointer_offset = pointer_offset or 0
+            local packed = bytes:sub(pointer_offset + 1, pointer_offset + 8)
+            if #packed < 8 then return nil end
+            local value = 0
+            for index = 8, 1, -1 do value = value * 256 + packed:byte(index) end
+            if value < 0x10000 then return nil end
+            return value
+        end,
+    }
+end
 update(0, 'marker')
 assert(forwarded == 'marker')
 assert(calls == 0)
-_G.StratagemLoadout = {'not a stratagem'}
-update(0.5, 'marker')
+_G.EquippedStratagemsReader = {
+    module = function() return nil end,
+    read = function() return nil end,
+    pointer = function() return nil end,
+}
+update(0.5, 'unreadable')
 assert(calls == 0)
-_G.StratagemLoadout = {'500kg', 'Autocannon', 'not a stratagem', 'resupply'}
-update(0.5, 'again')
-assert(bodies[#bodies] == 'Eagle 500kg Bomb\nAC-8 Autocannon\nResupply\n')
+use_rows({3}, 'not a stratagem')
+update(0.5, 'unknown-row')
+assert(calls == 0)
+use_rows({1, 2})
+update(0.5, 'equipped-rows')
+assert(bodies[#bodies] == 'Eagle 500kg Bomb\nAC-8 Autocannon\n')
 local after_first = calls
 update(0.5, 'same')
 assert(calls == after_first)
-_G.StratagemLoadout = {'still not real'}
+use_rows({3}, 'still not real')
 update(0.5, 'keep')
 assert(calls == after_first)
-_G.StratagemLoadout = {}
+package.loaded['mods/codex/loadouts'] = {current = {}}
 update(0.5, 'clear')
 assert(bodies[#bodies] == '')
 assert(EquippedStratagems.publish({'W.A.S.P. Launcher', '500 kg'}))
 assert(bodies[#bodies] == 'StA-X3 W.A.S.P. Launcher\nEagle 500kg Bomb\n')
 assert(not EquippedStratagems.publish({'nope'}))
 assert(bodies[#bodies] == 'StA-X3 W.A.S.P. Launcher\nEagle 500kg Bomb\n')
-package.loaded['script/lua/player'] = {equipped = {'Orbital Gatling Barrage'}}
-_G.StratagemLoadout = {'Eagle 500kg Bomb'}
-update(0.5, 'player-script')
+package.loaded['mods/codex/loadouts'] = {current = {'Orbital Gatling Barrage'}}
+update(0.5, 'loadouts-module')
 assert(bodies[#bodies] == 'Orbital Gatling Barrage\n')
 local registered_label = nil
 local down = false
@@ -228,7 +345,7 @@ _G.ModBindingsMenu = {
 }
 update(0.1, 'bind-register')
 assert(registered_label == 'Send Strategems')
-package.loaded['script/lua/player'] = {loadout = {'Resupply', '500kg'}}
+package.loaded['mods/codex/loadouts'] = {current = {'Resupply', '500kg'}}
 down = true
 local before_binding = calls
 update(0.1, 'bind-fire')
@@ -236,24 +353,9 @@ assert(calls > before_binding)
 assert(bodies[#bodies] == 'Resupply\nEagle 500kg Bomb\n')
 down = false
 update(0.1, 'bind-up')
-package.loaded['script/lua/player'] = nil
-package.loaded['script/lua/player_hud'] = nil
-local real_require = require
-local asked = nil
-_G.stingray = {
-    Application = {
-        can_get = function(kind, name)
-            return kind == 'lua' and name == 'script/lua/player_hud'
-        end,
-    },
-}
-require = function(name)
-    asked = name
-    return {slots = {'AC-8 Autocannon'}}
-end
-update(0.5, 'require-hud')
-require = real_require
-assert(asked == 'script/lua/player_hud')
+package.loaded['mods/codex/loadouts'] = nil
+use_rows({2})
+update(0.5, 'memory-after-loadouts')
 assert(bodies[#bodies] == 'AC-8 Autocannon\n')
 local chained = update
 dofile('mods/EquippedStratagems/EquippedStratagems.lua')
