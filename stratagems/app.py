@@ -91,6 +91,7 @@ class App:
             self.root.mainloop()
         finally:
             self._lock.release()
+            show_cursor()
             if self.listener is not None:
                 self.listener.stop()
 
@@ -379,7 +380,11 @@ class App:
             self.overlay.set_state(entries, notice, display_bind(self.config.radial_bind))
 
     def _press_radial(self, x: int, y: int) -> None:
-        if self._capture_cb is not None or self._radial_down:
+        if self._capture_cb is not None:
+            if self._lock.active:
+                self._lock.release()
+            return
+        if self._radial_down:
             return
         if not self._lock.active:
             return
@@ -444,6 +449,8 @@ class App:
         self._capture_cb = None
         self._capture_ready = False
         self._radial_down = False
+        if self._lock.active:
+            self._lock.release()
         if callable(callback):
             callback(name)
 

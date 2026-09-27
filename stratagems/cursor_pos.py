@@ -42,10 +42,25 @@ def conceal_cursor(hide_once: Callable[[], int]) -> int:
     return steps
 
 
-def reveal_cursor(show_once: Callable[[], int], steps: int) -> None:
-    """Undo the FALSE calls from ``conceal_cursor`` and no more."""
-    for _ in range(max(0, steps)):
-        show_once()
+def reveal_cursor(show_once: Callable[[], int], steps: int = 0) -> int:
+    """Call ShowCursor(TRUE) until the display count is nonnegative.
+
+    ``steps`` is the number of FALSE calls ``conceal_cursor`` recorded.
+    Extra FALSE calls can leave the count negative after that many TRUE
+    calls, which hides the cursor over the settings window too. Keep
+    going until ShowCursor returns a nonnegative count.
+    """
+    done = 0
+    count = -1
+    minimum = max(0, steps)
+    while done < _SHOW_CURSOR_LIMIT:
+        if done >= minimum and count >= 0:
+            return done
+        count = int(show_once())
+        done += 1
+        if count >= 0 and done >= minimum:
+            return done
+    return done
 
 
 class _Win32Cursor:
@@ -60,19 +75,52 @@ class _Win32Cursor:
         self._visible = True
         self._restore_steps = 0
 
+    @property
+    def visible(self) -> bool:
+        return self._visible
+
     def hide(self) -> None:
         if not self._visible:
             return
-        self._restore_steps = conceal_cursor(lambda: int(self._user32.ShowCursor(False)))
+        applied = 0
+
+        def hide_once() -> int:
+            nonlocal applied
+            count = int(self._user32.ShowCursor(False))
+            applied += 1
+            return count
+
+        try:
+            self._restore_steps = conceal_cursor(hide_once)
+        except Exception:
+            if applied:
+                self._visible = False
+                self._restore_steps = 0
+                self.show()
+            raise
         self._visible = False
 
     def keep_hidden(self) -> None:
         """Drive the display count negative again if a window showed the cursor."""
         if self._visible:
             return
-        self._restore_steps += conceal_cursor(lambda: int(self._user32.ShowCursor(False)))
+        applied = 0
+
+        def hide_once() -> int:
+            nonlocal applied
+            count = int(self._user32.ShowCursor(False))
+            applied += 1
+            return count
+
+        try:
+            self._restore_steps += conceal_cursor(hide_once)
+        except Exception:
+            if applied:
+                self.show()
+            raise
 
     def show(self) -> None:
+        """Call ShowCursor(TRUE) until the display counter is nonnegative."""
         if self._visible:
             return
         reveal_cursor(lambda: int(self._user32.ShowCursor(True)), self._restore_steps)
@@ -143,6 +191,10 @@ class _X11Cursor:
             fixes = None
         self._xfixes = fixes
         self._hide_count = 0
+
+    @property
+    def visible(self) -> bool:
+        return self._visible
 
     def hide(self) -> None:
         if self._xfixes is None or self._hide_count:
@@ -219,6 +271,10 @@ class _PynputCursor:
         with self._lock:
             self._mouse.position = (int(x), int(y))
 
+    @property
+    def visible(self) -> bool:
+        return True
+
     def hide(self) -> None:
         return
 
@@ -245,32 +301,61 @@ def hide_cursor() -> None:
     """Hide the OS cursor. A second call does nothing until ``show_cursor``.
 
     On Windows the hide repeats ShowCursor(FALSE) until the display count
-    is negative, then show restores that many TRUE calls.
+    is negative. ``show_cursor`` calls ShowCursor(TRUE) until that count
+    is nonnegative. This does not run at launch.
     """
     global _cursor_hidden
     with _visibility_lock:
         if _cursor_hidden:
             return
-        _cursor().hide()
+        try:
+            _cursor().hide()
+        except Exception:
+            _restore_open_backend()
+            raise
         _cursor_hidden = True
 
 
 def keep_cursor_hidden() -> None:
-    """If this process already hid the cursor, push the display count negative again."""
-    with _visibility_lock:
-        if not _cursor_hidden:
-            return
-        _cursor().keep_hidden()
+    """If this process already hid the cursor, push the display count negative again.
 
-
-def show_cursor() -> None:
-    """Show the OS cursor if this process hid it. Safe to call when it is already shown."""
+    No-op unless ``hide_cursor`` ran for an open wheel. A failure restores
+    the cursor instead of leaving the counter negative.
+    """
     global _cursor_hidden
     with _visibility_lock:
         if not _cursor_hidden:
             return
-        _cursor().show()
+        try:
+            _cursor().keep_hidden()
+        except Exception:
+            _restore_open_backend()
+            _cursor_hidden = False
+            return
+
+
+def show_cursor() -> None:
+    """Restore the OS cursor.
+
+    On Windows this calls ShowCursor(TRUE) until the display counter is
+    nonnegative, including FALSE calls that were not part of the recorded
+    conceal. Safe to call when the cursor is already shown, on wheel close,
+    on app exit, and after an interrupted hide. It never hides the cursor.
+    """
+    global _cursor_hidden
+    with _visibility_lock:
+        _restore_open_backend()
         _cursor_hidden = False
+
+
+def _restore_open_backend() -> None:
+    """Show a cursor this process hid. Does not open a backend just to show it."""
+    backend = _backend
+    if backend is None:
+        return
+    if not _cursor_hidden and backend.visible:
+        return
+    backend.show()
 
 
 def _show_cursor_on_exit() -> None:

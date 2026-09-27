@@ -146,6 +146,23 @@ def test_hold_hides_the_cursor_and_release_warps_then_shows_it() -> None:
     assert events[-1] == ("show", 400, 300)
 
 
+def test_an_interrupted_hide_restores_the_cursor() -> None:
+    events: list[str] = []
+
+    def hide() -> None:
+        events.append("hide")
+        raise OSError("interrupted")
+
+    def show() -> None:
+        events.append("show")
+
+    lock = PointerLock(lambda: (1, 2), lambda _x, _y: None, hide_cursor=hide, show_cursor=show)
+    assert lock.engage((0, 0)) == (1, 2)
+    assert events == ["hide", "show"]
+    assert lock.release() == (0, 0)
+    assert events == ["hide", "show"]
+
+
 def test_release_shows_the_cursor_after_a_failed_warp() -> None:
     events: list[str] = []
 

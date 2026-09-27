@@ -136,6 +136,7 @@ class PointerLock:
         try:
             callback()
         except Exception:
+            self._show_os_cursor()
             with self._mutex:
                 self._cursor_hidden = False
 

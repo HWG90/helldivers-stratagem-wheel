@@ -10,7 +10,7 @@ from collections.abc import Callable
 from ctypes import wintypes
 
 from stratagems.arrows import format_code
-from stratagems.cursor_pos import keep_cursor_hidden
+from stratagems.cursor_pos import keep_cursor_hidden, show_cursor
 from stratagems.catalog import LoadoutEntry
 from stratagems.matching import short_alias
 from stratagems.placement import format_geometry
@@ -107,7 +107,7 @@ class RadialOverlay:
         _install_overlay_window(self.win, color_key=self.transparent)
         self._blank_cursor()
         self._redraw()
-        if self.pointer_locked:
+        if self.pointer_locked and self.visible:
             keep_cursor_hidden()
 
     def hide(self) -> None:
@@ -115,6 +115,7 @@ class RadialOverlay:
         self._aim = (0.0, 0.0)
         self.set_pointer_locked(False)
         self.win.withdraw()
+        show_cursor()
 
     def set_transparent(self, enabled: bool) -> None:
         """Color-key the backing, gaps, and hazard frame. Wedge outlines stay."""
@@ -137,7 +138,7 @@ class RadialOverlay:
     def set_pointer_locked(self, locked: bool) -> None:
         self.pointer_locked = locked
         self._blank_cursor()
-        if locked:
+        if locked and self.visible:
             keep_cursor_hidden()
 
     def _blank_cursor(self) -> None:

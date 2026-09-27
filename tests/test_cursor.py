@@ -27,6 +27,44 @@ def test_show_cursor_false_repeats_until_the_count_is_negative() -> None:
     assert state["count"] == 2
 
 
+def test_close_restores_visibility_after_extra_false_calls() -> None:
+    """A close calls ShowCursor(TRUE) until the counter is nonnegative.
+
+    Recorded conceal steps are not enough when extra FALSE calls ran.
+    """
+    state = {"count": 0}
+
+    def hide_once() -> int:
+        state["count"] -= 1
+        return state["count"]
+
+    def show_once() -> int:
+        state["count"] += 1
+        return state["count"]
+
+    steps = conceal_cursor(hide_once)
+    assert steps == 1
+    assert state["count"] == -1
+    hide_once()
+    hide_once()
+    assert state["count"] == -3
+
+    reveal_cursor(show_once, steps)
+    assert state["count"] >= 0
+
+
+def test_reveal_with_no_recorded_steps_still_reaches_nonnegative() -> None:
+    """An interrupted hide can lose the step count and still must restore."""
+    state = {"count": -4}
+
+    def show_once() -> int:
+        state["count"] += 1
+        return state["count"]
+
+    assert reveal_cursor(show_once, 0) == 4
+    assert state["count"] == 0
+
+
 def test_windows_overlay_style_does_not_hit_test_or_activate() -> None:
     style = overlay_ex_style(0x11)
     assert style & WS_EX_LAYERED
