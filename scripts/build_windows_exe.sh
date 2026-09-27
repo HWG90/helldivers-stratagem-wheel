@@ -61,17 +61,22 @@ fi
 
 rm -rf "$WHEELS"
 mkdir -p "$WHEELS"
+# --no-deps: pynput's evdev extra is Linux-only and has no Windows wheel.
+# Windows needs the pure pynput wheel plus six. pytesseract needs packaging.
 "$PY" -m pip download \
   --dest "$WHEELS" \
+  --no-deps \
   --only-binary=:all: \
   --platform win_amd64 \
   --python-version 3.12 \
   --implementation cp \
-  "pynput>=1.7.7" \
-  "mss>=9.0.1" \
-  "pytesseract>=0.3.10" \
-  "rapidfuzz>=3.0.0" \
-  "Pillow>=10.0.0"
+  pynput \
+  six \
+  mss \
+  pytesseract \
+  packaging \
+  rapidfuzz \
+  Pillow
 
 export PYTHONPATH="$ROOT"
 "$PYNSIST" "$ROOT/packaging/installer.cfg" --no-makensis
@@ -173,6 +178,9 @@ SYSTEM = {
     "powrprof.dll", "propsys.dll", "dnsapi.dll", "nsi.dll", "sspicli.dll",
     "kernelbase.dll", "ucrtbase.dll", "msvcp140.dll", "msvcp140_1.dll",
     "concrt140.dll", "vcomp140.dll", "sechost.dll", "combase.dll",
+    "msimg32.dll", "usp10.dll", "dwrite.dll", "gdiplus.dll", "oleacc.dll",
+    "winhttp.dll", "wintrust.dll", "d3d11.dll", "dxgi.dll", "opengl32.dll",
+    "glu32.dll", "wsock32.dll", "mswsock.dll", "cryptbase.dll", "msi.dll",
 }
 
 def imports(path: Path) -> list[str]:
